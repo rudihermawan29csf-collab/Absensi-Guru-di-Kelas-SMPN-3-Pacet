@@ -1,15 +1,22 @@
+
 import React, { useState, useMemo } from 'react';
-import { AttendanceRecord, AttendanceStatus, Teacher, AppSettings, SchoolEvent, ScheduleEntry } from './types';
+import { AttendanceRecord, AttendanceStatus, Teacher, AppSettings, SchoolEvent, ScheduleEntry, User, UserRole } from './types';
 import { CLASSES, CLASS_COLORS, TEACHERS as INITIAL_TEACHERS, SCHEDULE as INITIAL_SCHEDULE, MAPEL_NAME_MAP, TEACHER_COLORS } from '../constants';
 import { 
   Users, LayoutGrid, Calendar, Activity, Settings, ShieldCheck, BookOpen, Save, CheckCircle2, RefreshCw, 
   Wifi, BarChart3, AlertTriangle, Clock, Search, BookText, Plus, Trash2, CalendarDays, TrendingUp, UserCheck,
-  Edit3, Coffee, Filter, PieChart as PieIcon, ChevronDown
+  Edit3, Coffee, Filter, PieChart as PieIcon, ChevronDown, Download, FileSpreadsheet, FileText
 } from 'lucide-react';
 import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend } from 'recharts';
 import { spreadsheetService } from './spreadsheetService';
 
+// Library ekspor
+import * as XLSX from 'xlsx';
+import { jsPDF } from 'jspdf';
+import 'jspdf-autotable';
+
 interface AdminDashboardProps {
+  user: User;
   data: AttendanceRecord[];
   teachers: Teacher[];
   setTeachers: (val: Teacher[] | ((prev: Teacher[]) => Teacher[])) => void;
@@ -24,7 +31,7 @@ type AdminTab = 'overview' | 'monitoring' | 'permits' | 'agenda' | 'teachers' | 
 type TimeFilter = 'harian' | 'mingguan' | 'bulanan' | 'semester';
 
 const AdminDashboard: React.FC<AdminDashboardProps> = ({ 
-  data, teachers, schedule, settings, setSettings, onSaveAttendance 
+  user, data, teachers, schedule, settings, setSettings, onSaveAttendance 
 }) => {
   const [activeTab, setActiveTab] = useState<AdminTab>('overview');
   const [timeFilter, setTimeFilter] = useState<TimeFilter>('harian');
@@ -32,6 +39,18 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const [isRestoring, setIsRestoring] = useState(false);
   const [searchTeacher, setSearchTeacher] = useState('');
   const [scheduleDay, setScheduleDay] = useState('SENIN');
+
+  const isAdmin = user.role === UserRole.ADMIN;
+
+  // Filter States for Permit History
+  const [permitFilterTeacher, setPermitFilterTeacher] = useState('');
+  const [permitFilterStart, setPermitFilterStart] = useState('');
+  const [permitFilterEnd, setPermitFilterEnd] = useState('');
+
+  // Filter States for Agenda History
+  const [agendaFilterTeacher, setAgendaFilterTeacher] = useState('');
+  const [agendaFilterStart, setAgendaFilterStart] = useState('');
+  const [agendaFilterEnd, setAgendaFilterEnd] = useState('');
 
   // Deep Dive Selection States
   const [selectedClassId, setSelectedClassId] = useState(CLASSES[0].id);
@@ -111,12 +130,105 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
     };
   }, [filteredRecords, selectedTeacherId]);
 
-  // Fix: Added missing permitHistory memoized data for riwayat izin view
-  const permitHistory = useMemo(() => {
+  // Riwayat Izin Terfilter
+  const filteredPermitHistory = useMemo(() => {
     return (data || [])
       .filter(r => r.is_admin_input)
+      .filter(r => !permitFilterTeacher || r.id_guru === permitFilterTeacher)
+      .filter(r => !permitFilterStart || r.tanggal >= permitFilterStart)
+      .filter(r => !permitFilterEnd || r.tanggal <= permitFilterEnd)
       .sort((a, b) => new Date(b.tanggal).getTime() - new Date(a.tanggal).getTime());
-  }, [data]);
+  }, [data, permitFilterTeacher, permitFilterStart, permitFilterEnd]);
+
+  // Riwayat Agenda Terfilter
+  const filteredAgendaHistory = useMemo(() => {
+    return (settings.events || [])
+      .filter(e => !agendaFilterStart || e.tanggal >= agendaFilterStart)
+      .filter(e => !agendaFilterEnd || e.tanggal <= agendaFilterEnd)
+      .filter(e => {
+        if (!agendaFilterTeacher) return true;
+        if (e.tipe === 'LIBUR' || e.tipe === 'KEGIATAN') return true;
+        if (e.tipe === 'JAM_KHUSUS' && e.affected_jams) {
+          const d = new Date(e.tanggal);
+          const dayNames = ['MINGGU', 'SENIN', 'SELASA', 'RABU', 'KAMIS', 'JUM\'AT', 'SABTU'];
+          const day = dayNames[d.getDay()];
+          const teacherSlots = schedule.filter(s => s.hari === day && s.kegiatan === 'KBM');
+          return teacherSlots.some(s => {
+            const hasClass = Object.values(s.mapping).some(m => (m as string).split('-')[1] === agendaFilterTeacher);
+            return hasClass && e.affected_jams?.includes(s.jam);
+          });
+        }
+        return true;
+      })
+      .sort((a, b) => new Date(b.tanggal).getTime() - new Date(a.tanggal).getTime());
+  }, [settings.events, agendaFilterStart, agendaFilterEnd, agendaFilterTeacher, schedule]);
+
+  // EXPORT FUNCTIONS
+  const exportToExcel = (type: 'izin' | 'agenda' | 'class_analysis' | 'teacher_analysis') => {
+    let exportData: any[] = [];
+    let fileName = '';
+
+    if (type === 'izin') {
+      exportData = filteredPermitHistory.map(r => ({
+        'Tanggal': r.tanggal, 'Guru': r.nama_guru, 'Kelas': r.id_kelas, 'Jam': r.jam, 'Status': r.status, 'Catatan': r.catatan || '-'
+      }));
+      fileName = `Riwayat_Izin_${todayStr}.xlsx`;
+    } else if (type === 'agenda') {
+      exportData = filteredAgendaHistory.map(e => ({
+        'Tanggal': e.tanggal, 'Agenda': e.nama, 'Tipe': e.tipe, 'Jam Terdampak': e.affected_jams?.join(', ') || 'Semua'
+      }));
+      fileName = `Agenda_Sekolah_${todayStr}.xlsx`;
+    } else if (type === 'class_analysis') {
+      exportData = classDeepDiveData.map(d => ({
+        'Nama Guru': d.name, 'Hadir': d.Hadir, 'Izin': d.Izin, 'Sakit': d.Sakit, 'Alpha': d.Alpha
+      }));
+      fileName = `Analisis_Kelas_${selectedClassId}_${todayStr}.xlsx`;
+    } else if (type === 'teacher_analysis') {
+      exportData = teacherDeepDiveData.distribution.map(d => ({
+        'Kelas': d.name, 'Hadir': d.Hadir, 'Alpha': d.Alpha
+      }));
+      fileName = `Analisis_Guru_${selectedTeacherId}_${todayStr}.xlsx`;
+    }
+
+    const ws = XLSX.utils.json_to_sheet(exportData);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Data");
+    XLSX.writeFile(wb, fileName);
+  };
+
+  const exportToPDF = (type: 'izin' | 'agenda' | 'class_analysis' | 'teacher_analysis') => {
+    const doc = new jsPDF() as any;
+    let title = '';
+    
+    if (type === 'izin') title = 'LAPORAN IZIN/SAKIT GURU';
+    else if (type === 'agenda') title = 'LAPORAN AGENDA SEKOLAH';
+    else if (type === 'class_analysis') title = `ANALISIS KEHADIRAN GURU - KELAS ${selectedClassId}`;
+    else if (type === 'teacher_analysis') {
+      const t = teachers.find(t => t.id === selectedTeacherId);
+      title = `ANALISIS KEHADIRAN - ${t?.nama || selectedTeacherId}`;
+    }
+    
+    doc.setFontSize(16);
+    doc.text(title, 14, 15);
+    doc.setFontSize(10);
+    doc.text(`Dicetak pada: ${new Date().toLocaleString()}`, 14, 22);
+
+    if (type === 'izin') {
+      const body = filteredPermitHistory.map(r => [r.tanggal, r.nama_guru, r.id_kelas, r.jam, r.status, r.catatan || '-']);
+      doc.autoTable({ head: [['TANGGAL', 'GURU', 'KELAS', 'JAM', 'STATUS', 'CATATAN']], body, startY: 30 });
+    } else if (type === 'agenda') {
+      const body = filteredAgendaHistory.map(e => [e.tanggal, e.nama, e.tipe, e.affected_jams?.join(', ') || 'Semua']);
+      doc.autoTable({ head: [['TANGGAL', 'AGENDA', 'TIPE', 'JAM TERDAMPAK']], body, startY: 30 });
+    } else if (type === 'class_analysis') {
+      const body = classDeepDiveData.map(d => [d.name, d.Hadir, d.Izin, d.Sakit, d.Alpha]);
+      doc.autoTable({ head: [['NAMA GURU', 'HADIR', 'IZIN', 'SAKIT', 'ALPHA']], body, startY: 30 });
+    } else if (type === 'teacher_analysis') {
+      const body = teacherDeepDiveData.distribution.map(d => [d.name, d.Hadir, d.Alpha]);
+      doc.autoTable({ head: [['KELAS', 'HADIR', 'ALPHA']], body, startY: 30 });
+    }
+
+    doc.save(`${type}_report.pdf`);
+  };
 
   const stats = {
     hadir: filteredRecords.filter(r => r.status === AttendanceStatus.HADIR).length,
@@ -142,7 +254,7 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
     
     teacherSchedule.forEach(slot => {
       CLASSES.forEach(cls => {
-        const mapping = slot.mapping[cls.id];
+        const mapping = slot.mapping[cls.id] as string;
         if (mapping && mapping.split('-')[1] === permitForm.teacherId) {
           records.push({
             id: `${permitForm.date}-${cls.id}-${slot.jam}`,
@@ -211,7 +323,6 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
-  // Fix: Added missing handleDeleteEvent function to allow removing agenda items
   const handleDeleteEvent = async (id: string) => {
     if (!confirm('Hapus agenda ini?')) return;
     const updatedEvents = (settings.events || []).filter(e => e.id !== id);
@@ -251,23 +362,27 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
     return schedule.filter(s => s.hari === today);
   }, [schedule]);
 
+  const availableTabs = [
+    { id: 'overview', icon: <LayoutGrid size={16}/>, label: 'Ikhtisar' },
+    { id: 'monitoring', icon: <Activity size={16}/>, label: 'Live' },
+    { id: 'permits', icon: <ShieldCheck size={16}/>, label: 'Izin' },
+    { id: 'agenda', icon: <CalendarDays size={16}/>, label: 'Agenda' },
+    ...(isAdmin ? [
+      { id: 'teachers', icon: <Users size={16}/>, label: 'Guru' },
+      { id: 'schedule', icon: <BookOpen size={16}/>, label: 'Jadwal' },
+      { id: 'settings', icon: <Settings size={16}/>, label: 'Sistem' }
+    ] : [])
+  ];
+
   return (
     <div className="space-y-6 pb-20 animate-in fade-in duration-500">
       <header className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
         <div>
-          <h1 className="text-xl font-black text-slate-800 tracking-tight uppercase italic">Control <span className="text-indigo-600">Center</span></h1>
+          <h1 className="text-xl font-black text-slate-800 tracking-tight uppercase italic">{isAdmin ? 'Control' : 'Monitor'} <span className="text-indigo-600">{isAdmin ? 'Center' : 'Center'}</span></h1>
           <p className="text-slate-500 text-[9px] font-black uppercase tracking-[0.2em] italic">Database Integrasi • SMPN 3 Pacet</p>
         </div>
         <div className="bg-white p-1 rounded-2xl border border-slate-200 shadow-sm flex overflow-x-auto no-scrollbar gap-1">
-          {[
-            { id: 'overview', icon: <LayoutGrid size={16}/>, label: 'Ikhtisar' },
-            { id: 'monitoring', icon: <Activity size={16}/>, label: 'Live' },
-            { id: 'permits', icon: <ShieldCheck size={16}/>, label: 'Izin' },
-            { id: 'agenda', icon: <CalendarDays size={16}/>, label: 'Agenda' },
-            { id: 'teachers', icon: <Users size={16}/>, label: 'Guru' },
-            { id: 'schedule', icon: <BookOpen size={16}/>, label: 'Jadwal' },
-            { id: 'settings', icon: <Settings size={16}/>, label: 'Sistem' }
-          ].map(tab => (
+          {availableTabs.map(tab => (
             <button key={tab.id} onClick={() => setActiveTab(tab.id as any)} className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-[9px] font-black uppercase transition-all shrink-0 ${activeTab === tab.id ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-500 hover:bg-slate-50'}`}>
               {tab.icon} {tab.label}
             </button>
@@ -297,11 +412,15 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
             <div className="bg-white p-8 rounded-[40px] border border-slate-100 shadow-2xl relative">
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-6 mb-10">
                  <div className="flex items-center gap-3"><BarChart3 size={20} className="text-indigo-600"/><h3 className="text-xs font-black uppercase italic text-slate-800">Analisis Per Kelas</h3></div>
-                 <div className="relative group">
-                    <select className="appearance-none bg-slate-50 border border-slate-100 pl-6 pr-10 py-3 rounded-2xl text-[10px] font-black uppercase outline-none focus:ring-4 focus:ring-indigo-50 min-w-[140px] italic cursor-pointer" value={selectedClassId} onChange={e => setSelectedClassId(e.target.value)}>
-                       {CLASSES.map(c => <option key={c.id} value={c.id}>KELAS {c.id}</option>)}
-                    </select>
-                    <ChevronDown size={14} className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
+                 <div className="flex items-center gap-3">
+                    <button onClick={() => exportToExcel('class_analysis')} className="p-2.5 bg-emerald-50 text-emerald-600 rounded-xl hover:bg-emerald-100 transition-all border border-emerald-100" title="Excel"><FileSpreadsheet size={16}/></button>
+                    <button onClick={() => exportToPDF('class_analysis')} className="p-2.5 bg-rose-50 text-rose-600 rounded-xl hover:bg-rose-100 transition-all border border-rose-100" title="PDF"><FileText size={16}/></button>
+                    <div className="relative group">
+                        <select className="appearance-none bg-slate-50 border border-slate-100 pl-6 pr-10 py-3 rounded-2xl text-[10px] font-black uppercase outline-none focus:ring-4 focus:ring-indigo-50 min-w-[140px] italic cursor-pointer" value={selectedClassId} onChange={e => setSelectedClassId(e.target.value)}>
+                          {CLASSES.map(c => <option key={c.id} value={c.id}>KELAS {c.id}</option>)}
+                        </select>
+                        <ChevronDown size={14} className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
+                    </div>
                  </div>
               </div>
 
@@ -355,11 +474,15 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
             <div className="bg-white p-8 rounded-[40px] border border-slate-100 shadow-2xl overflow-hidden">
                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-6 mb-10">
                  <div className="flex items-center gap-3"><UserCheck size={20} className="text-indigo-600"/><h3 className="text-xs font-black uppercase italic text-slate-800">Analisis Per Guru</h3></div>
-                 <div className="relative group">
-                    <select className="appearance-none bg-slate-50 border border-slate-100 pl-6 pr-10 py-3 rounded-2xl text-[10px] font-black uppercase outline-none focus:ring-4 focus:ring-indigo-50 min-w-[180px] italic cursor-pointer" value={selectedTeacherId} onChange={e => setSelectedTeacherId(e.target.value)}>
-                       {teachers.map(t => <option key={t.id} value={t.id}>{t.nama}</option>)}
-                    </select>
-                    <ChevronDown size={14} className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
+                 <div className="flex items-center gap-3">
+                    <button onClick={() => exportToExcel('teacher_analysis')} className="p-2.5 bg-emerald-50 text-emerald-600 rounded-xl hover:bg-emerald-100 transition-all border border-emerald-100" title="Excel"><FileSpreadsheet size={16}/></button>
+                    <button onClick={() => exportToPDF('teacher_analysis')} className="p-2.5 bg-rose-50 text-rose-600 rounded-xl hover:bg-rose-100 transition-all border border-rose-100" title="PDF"><FileText size={16}/></button>
+                    <div className="relative group">
+                        <select className="appearance-none bg-slate-50 border border-slate-100 pl-6 pr-10 py-3 rounded-2xl text-[10px] font-black uppercase outline-none focus:ring-4 focus:ring-indigo-50 min-w-[180px] italic cursor-pointer" value={selectedTeacherId} onChange={e => setSelectedTeacherId(e.target.value)}>
+                          {teachers.map(t => <option key={t.id} value={t.id}>{t.nama}</option>)}
+                        </select>
+                        <ChevronDown size={14} className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
+                    </div>
                  </div>
               </div>
 
@@ -449,6 +572,7 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
       {/* PERMITS TAB */}
       {activeTab === 'permits' && (
         <div className="max-w-5xl mx-auto space-y-8 animate-in slide-in-from-bottom-6">
+           {isAdmin && (
            <div className="bg-white p-10 rounded-[40px] border border-slate-100 shadow-2xl relative overflow-hidden">
               <h3 className="text-sm font-black uppercase italic mb-8 flex items-center gap-4"><ShieldCheck size={24} className="text-indigo-600"/> {permitForm.id ? 'Perbarui Izin/Sakit' : 'Input Izin Baru'}</h3>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8 relative z-10">
@@ -475,14 +599,45 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
                  {permitForm.id && <button onClick={() => setPermitForm({ id: '', date: todayStr, teacherId: '', status: AttendanceStatus.IZIN, note: 'Izin keperluan keluarga', type: 'FULL_DAY', affected_jams: [] })} className="bg-slate-200 text-slate-600 font-black px-8 rounded-3xl text-[10px] uppercase">Batal</button>}
               </div>
            </div>
+           )}
 
+           {/* RIWAYAT IZIN DENGAN FILTER & EKSPOR */}
            <div className="bg-white p-10 rounded-[40px] border border-slate-100 shadow-2xl">
-              <h3 className="text-sm font-black uppercase italic mb-8 flex items-center gap-4 text-slate-800"><Activity size={24} className="text-indigo-600"/> Riwayat Izin & Aksi</h3>
+              <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-6 mb-10">
+                 <div>
+                    <h3 className="text-sm font-black uppercase italic flex items-center gap-4 text-slate-800"><Activity size={24} className="text-indigo-600"/> Riwayat Izin & Aksi</h3>
+                    <p className="text-[10px] font-black text-indigo-600 uppercase mt-1 italic">Ditemukan {filteredPermitHistory.length} Data Izin</p>
+                 </div>
+                 <div className="flex items-center gap-3">
+                    <button onClick={() => exportToExcel('izin')} className="flex items-center gap-2 px-5 py-3 bg-emerald-50 text-emerald-600 rounded-2xl text-[9px] font-black uppercase hover:bg-emerald-100 transition-all border border-emerald-100"><FileSpreadsheet size={16}/> Excel</button>
+                    <button onClick={() => exportToPDF('izin')} className="flex items-center gap-2 px-5 py-3 bg-rose-50 text-rose-600 rounded-2xl text-[9px] font-black uppercase hover:bg-rose-100 transition-all border border-rose-100"><FileText size={16}/> PDF</button>
+                 </div>
+              </div>
+
+              {/* FILTER ROW */}
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8 bg-slate-50 p-6 rounded-[32px] border border-slate-100">
+                 <div>
+                    <label className="text-[9px] font-black text-slate-400 uppercase italic mb-2 block">Cari Guru</label>
+                    <select className="w-full bg-white border border-slate-100 px-4 py-2.5 rounded-xl text-[10px] font-black uppercase outline-none" value={permitFilterTeacher} onChange={e => setPermitFilterTeacher(e.target.value)}>
+                       <option value="">-- SEMUA GURU --</option>
+                       {teachers.map(t => <option key={t.id} value={t.id}>{t.nama}</option>)}
+                    </select>
+                 </div>
+                 <div>
+                    <label className="text-[9px] font-black text-slate-400 uppercase italic mb-2 block">Dari Tanggal</label>
+                    <input type="date" className="w-full bg-white border border-slate-100 px-4 py-2 rounded-xl text-[10px] font-black uppercase outline-none" value={permitFilterStart} onChange={e => setPermitFilterStart(e.target.value)}/>
+                 </div>
+                 <div>
+                    <label className="text-[9px] font-black text-slate-400 uppercase italic mb-2 block">Sampai Tanggal</label>
+                    <input type="date" className="w-full bg-white border border-slate-100 px-4 py-2 rounded-xl text-[10px] font-black uppercase outline-none" value={permitFilterEnd} onChange={e => setPermitFilterEnd(e.target.value)}/>
+                 </div>
+              </div>
+
               <div className="space-y-4 max-h-[500px] overflow-y-auto pr-4 custom-scrollbar">
-                {permitHistory.length === 0 ? (
-                  <div className="py-10 text-center text-[10px] font-black uppercase text-slate-400 italic">Belum ada riwayat izin</div>
+                {filteredPermitHistory.length === 0 ? (
+                  <div className="py-10 text-center text-[10px] font-black uppercase text-slate-400 italic">Data tidak ditemukan atau belum ada riwayat</div>
                 ) : (
-                  permitHistory.map((rec, i) => (
+                  filteredPermitHistory.map((rec, i) => (
                     <div key={rec.id} className="flex items-center justify-between p-6 rounded-[28px] bg-slate-50/50 border border-slate-100 hover:border-indigo-100 transition-all group">
                       <div className="flex items-center gap-5">
                         <div className={`w-12 h-12 rounded-2xl flex items-center justify-center shrink-0 ${rec.status === AttendanceStatus.SAKIT ? 'bg-amber-100 text-amber-600' : 'bg-blue-100 text-blue-600'}`}>
@@ -493,10 +648,12 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
                           <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-0.5">{rec.tanggal} • JAM {rec.jam} • {rec.id_kelas}</p>
                         </div>
                       </div>
+                      {isAdmin && (
                       <div className="flex items-center gap-3">
                          <button onClick={() => handleEditPermit(rec)} className="p-3 bg-white text-indigo-500 rounded-xl border border-slate-100 opacity-0 group-hover:opacity-100 transition-opacity shadow-sm hover:bg-indigo-50"><Edit3 size={16}/></button>
                          <button onClick={() => handleDeletePermit(rec)} className="p-3 bg-white text-rose-500 rounded-xl border border-slate-100 opacity-0 group-hover:opacity-100 transition-opacity shadow-sm hover:bg-rose-50"><Trash2 size={16}/></button>
                       </div>
+                      )}
                     </div>
                   ))
                 )}
@@ -508,6 +665,7 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
       {/* AGENDA TAB */}
       {activeTab === 'agenda' && (
         <div className="max-w-5xl mx-auto space-y-8 animate-in slide-in-from-bottom-6">
+           {isAdmin && (
            <div className="bg-white p-10 rounded-[40px] border border-slate-100 shadow-2xl">
               <h3 className="text-sm font-black uppercase italic mb-8 flex items-center gap-4 text-slate-800"><CalendarDays size={24} className="text-indigo-600"/> {newEvent.id ? 'Perbarui Agenda' : 'Kelola Agenda Sekolah'}</h3>
               <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
@@ -546,14 +704,44 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
                  {newEvent.id && <button onClick={() => setNewEvent({ tanggal: todayStr, nama: '', tipe: 'LIBUR', affected_jams: [] })} className="bg-slate-100 text-slate-500 font-black px-8 rounded-3xl text-[10px] uppercase">Batal</button>}
               </div>
            </div>
+           )}
 
            <div className="bg-white p-10 rounded-[40px] border border-slate-100 shadow-2xl">
-              <h3 className="text-sm font-black uppercase italic mb-8 flex items-center gap-4 text-slate-800"><BookText size={24} className="text-indigo-600"/> Agenda Cloud Terdaftar</h3>
+              <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-6 mb-10">
+                 <div>
+                    <h3 className="text-sm font-black uppercase italic flex items-center gap-4 text-slate-800"><BookText size={24} className="text-indigo-600"/> Agenda Cloud Terdaftar</h3>
+                    <p className="text-[10px] font-black text-indigo-600 uppercase mt-1 italic">Ditemukan {filteredAgendaHistory.length} Agenda Terdaftar</p>
+                 </div>
+                 <div className="flex items-center gap-3">
+                    <button onClick={() => exportToExcel('agenda')} className="flex items-center gap-2 px-5 py-3 bg-emerald-50 text-emerald-600 rounded-2xl text-[9px] font-black uppercase hover:bg-emerald-100 transition-all border border-emerald-100"><FileSpreadsheet size={16}/> Excel</button>
+                    <button onClick={() => exportToPDF('agenda')} className="flex items-center gap-2 px-5 py-3 bg-rose-50 text-rose-600 rounded-2xl text-[9px] font-black uppercase hover:bg-rose-100 transition-all border border-rose-100"><FileText size={16}/> PDF</button>
+                 </div>
+              </div>
+
+              {/* FILTER ROW */}
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8 bg-slate-50 p-6 rounded-[32px] border border-slate-100">
+                 <div>
+                    <label className="text-[9px] font-black text-slate-400 uppercase italic mb-2 block">Filter Guru (Jadwal Terkait)</label>
+                    <select className="w-full bg-white border border-slate-100 px-4 py-2.5 rounded-xl text-[10px] font-black uppercase outline-none" value={agendaFilterTeacher} onChange={e => setAgendaFilterTeacher(e.target.value)}>
+                       <option value="">-- SEMUA GURU --</option>
+                       {teachers.map(t => <option key={t.id} value={t.id}>{t.nama}</option>)}
+                    </select>
+                 </div>
+                 <div>
+                    <label className="text-[9px] font-black text-slate-400 uppercase italic mb-2 block">Dari Tanggal</label>
+                    <input type="date" className="w-full bg-white border border-slate-100 px-4 py-2 rounded-xl text-[10px] font-black uppercase outline-none" value={agendaFilterStart} onChange={e => setAgendaFilterStart(e.target.value)}/>
+                 </div>
+                 <div>
+                    <label className="text-[9px] font-black text-slate-400 uppercase italic mb-2 block">Sampai Tanggal</label>
+                    <input type="date" className="w-full bg-white border border-slate-100 px-4 py-2 rounded-xl text-[10px] font-black uppercase outline-none" value={agendaFilterEnd} onChange={e => setAgendaFilterEnd(e.target.value)}/>
+                 </div>
+              </div>
+
               <div className="space-y-4 max-h-[500px] overflow-y-auto pr-4 custom-scrollbar">
-                {(settings.events || []).length === 0 ? (
-                  <div className="py-10 text-center text-[10px] font-black uppercase text-slate-400 italic">Belum ada agenda</div>
+                {filteredAgendaHistory.length === 0 ? (
+                  <div className="py-10 text-center text-[10px] font-black uppercase text-slate-400 italic">Data tidak ditemukan atau belum ada agenda</div>
                 ) : (
-                  [...(settings.events || [])].sort((a,b) => new Date(b.tanggal).getTime() - new Date(a.tanggal).getTime()).map((ev, i) => (
+                  filteredAgendaHistory.map((ev, i) => (
                     <div key={ev.id} className="flex items-center justify-between p-6 rounded-[28px] bg-slate-50/50 border border-slate-100 group">
                       <div className="flex items-center gap-5">
                         <div className={`w-12 h-12 rounded-2xl flex items-center justify-center shrink-0 ${ev.tipe === 'LIBUR' ? 'bg-rose-100 text-rose-600' : ev.tipe === 'KEGIATAN' ? 'bg-emerald-100 text-emerald-600' : 'bg-amber-100 text-amber-600'}`}>
@@ -564,10 +752,12 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
                           <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-0.5">{ev.tanggal} • {ev.tipe} {ev.tipe === 'JAM_KHUSUS' && `(Jam: ${ev.affected_jams?.join(', ')})`}</p>
                         </div>
                       </div>
+                      {isAdmin && (
                       <div className="flex items-center gap-3">
                          <button onClick={() => handleEditEvent(ev)} className="p-3 bg-white text-indigo-500 rounded-xl border border-slate-100 opacity-0 group-hover:opacity-100 transition-opacity shadow-sm hover:bg-indigo-50"><Edit3 size={16}/></button>
                          <button onClick={() => handleDeleteEvent(ev.id)} className="p-3 bg-white text-rose-500 rounded-xl border border-slate-100 opacity-0 group-hover:opacity-100 transition-opacity shadow-sm hover:bg-rose-50"><Trash2 size={16}/></button>
                       </div>
+                      )}
                     </div>
                   ))
                 )}
@@ -576,8 +766,8 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
         </div>
       )}
 
-      {/* OTHER TABS (TEACHERS, SCHEDULE, SETTINGS) */}
-      {activeTab === 'teachers' && (
+      {/* OTHER TABS (TEACHERS, SCHEDULE, SETTINGS) ONLY FOR ADMIN */}
+      {activeTab === 'teachers' && isAdmin && (
         <div className="space-y-6 animate-in fade-in slide-in-from-bottom-6">
            <div className="bg-white p-8 rounded-[40px] border border-slate-100 shadow-2xl">
               <div className="flex flex-col md:flex-row md:items-center justify-between gap-6 mb-8">
@@ -610,7 +800,7 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
         </div>
       )}
 
-      {activeTab === 'schedule' && (
+      {activeTab === 'schedule' && isAdmin && (
         <div className="space-y-6 animate-in fade-in slide-in-from-bottom-6">
            <div className="bg-white p-8 rounded-[40px] border border-slate-100 shadow-2xl">
               <div className="flex flex-col md:flex-row md:items-center justify-between gap-6 mb-8">
@@ -649,7 +839,7 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
         </div>
       )}
 
-      {activeTab === 'settings' && (
+      {activeTab === 'settings' && isAdmin && (
         <div className="max-w-4xl mx-auto space-y-8 animate-in slide-in-from-bottom-6">
            <div className={`p-8 rounded-[40px] border flex flex-col md:flex-row items-center md:items-start gap-8 shadow-2xl bg-emerald-50 border-emerald-100`}>
               <div className={`p-6 rounded-[32px] shadow-xl flex items-center justify-center bg-white text-emerald-600`}>

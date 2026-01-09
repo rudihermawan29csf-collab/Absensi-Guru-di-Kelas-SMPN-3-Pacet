@@ -133,7 +133,8 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
     const teacher = teachers.find(t => t.id === permitForm.teacherId);
     teacherSchedule.forEach(slot => {
       CLASSES.forEach(cls => {
-        const mapping = slot.mapping[cls.id];
+        // Fix: Cast mapping to string to ensure split() is accessible on the inferred type
+        const mapping = slot.mapping[cls.id] as string;
         if (mapping && mapping.split('-')[1] === permitForm.teacherId) {
           records.push({
             id: `${permitForm.date}-${cls.id}-${slot.jam}`,

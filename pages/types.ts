@@ -2,7 +2,8 @@
 export enum UserRole {
   ADMIN = 'ADMIN',
   GURU = 'GURU',
-  KETUA_KELAS = 'KETUA_KELAS'
+  KETUA_KELAS = 'KETUA_KELAS',
+  KEPALA_SEKOLAH = 'KEPALA_SEKOLAH'
 }
 
 export enum AttendanceStatus {

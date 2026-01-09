@@ -152,11 +152,12 @@ const App: React.FC = () => {
           />
         ) : <Navigate to="/login" />}>
           <Route index element={
-            user?.role === UserRole.ADMIN ? (
+            (user?.role === UserRole.ADMIN || user?.role === UserRole.KEPALA_SEKOLAH) ? (
               <AdminDashboard 
+                user={user}
                 data={attendanceData} 
                 teachers={teachers} 
-                setTeachers={() => {}} // Admin logic to update via sheet
+                setTeachers={() => {}} 
                 schedule={schoolSchedule}
                 setSchedule={() => {}}
                 settings={settings}

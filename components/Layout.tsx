@@ -1,3 +1,4 @@
+
 import React, { useState } from 'react';
 import { Link, Outlet, useLocation } from 'react-router-dom';
 import { User, UserRole } from '../pages/types';
@@ -30,7 +31,7 @@ const Layout: React.FC<LayoutProps> = ({ user, onLogout, syncStatus, onRefresh }
       label: 'Dashboard', 
       path: '/', 
       icon: <LayoutDashboard size={18} />, 
-      roles: [UserRole.ADMIN, UserRole.GURU, UserRole.KETUA_KELAS] 
+      roles: [UserRole.ADMIN, UserRole.GURU, UserRole.KETUA_KELAS, UserRole.KEPALA_SEKOLAH] 
     },
     { 
       label: 'Input Absensi', 

@@ -1,7 +1,8 @@
+
 import React, { useState } from 'react';
 import { UserRole, User, Teacher } from './types';
 import { CLASSES } from '../constants';
-import { School, AlertCircle, ShieldCheck, UserCircle, Users, Lock } from 'lucide-react';
+import { School, AlertCircle, ShieldCheck, UserCircle, Users, Lock, GraduationCap } from 'lucide-react';
 
 interface LoginPageProps {
   onLogin: (user: User) => void;
@@ -22,6 +23,13 @@ const LoginPage: React.FC<LoginPageProps> = ({ onLogin, teachers }) => {
       if (password === 'admin123') {
         onLogin({ id: 'admin1', nama: 'Admin Utama', role: UserRole.ADMIN, email: 'admin@smpn3pacet.sch.id' });
       } else setError('Password Admin salah!');
+      return;
+    }
+
+    if (role === UserRole.KEPALA_SEKOLAH) {
+      if (password === 'kepala123') {
+        onLogin({ id: 'kepala1', nama: 'Kepala Sekolah', role: UserRole.KEPALA_SEKOLAH, email: 'kepala@smpn3pacet.sch.id' });
+      } else setError('Password Kepala Sekolah salah!');
       return;
     }
 
@@ -54,16 +62,17 @@ const LoginPage: React.FC<LoginPageProps> = ({ onLogin, teachers }) => {
         </div>
 
         <div className="bg-white rounded-[32px] shadow-2xl border border-slate-100 overflow-hidden">
-          <div className="flex bg-slate-50 border-b border-slate-100 p-1">
+          <div className="flex bg-slate-50 border-b border-slate-100 p-1 overflow-x-auto no-scrollbar">
             {[
               { id: UserRole.KETUA_KELAS, label: 'Siswa', icon: <Users size={14}/> },
               { id: UserRole.GURU, label: 'Guru', icon: <UserCircle size={14}/> },
+              { id: UserRole.KEPALA_SEKOLAH, label: 'Kepala', icon: <GraduationCap size={14}/> },
               { id: UserRole.ADMIN, label: 'Admin', icon: <ShieldCheck size={14}/> }
             ].map((tab) => (
               <button 
                 key={tab.id}
                 onClick={() => { setRole(tab.id); setSelectedId(''); }}
-                className={`flex-1 flex items-center justify-center gap-2 py-4 text-[10px] font-black uppercase rounded-2xl transition-all ${role === tab.id ? 'bg-white text-indigo-600 shadow-xl' : 'text-slate-400 hover:text-slate-600'}`}
+                className={`flex-1 flex items-center justify-center gap-2 py-4 px-4 text-[10px] font-black uppercase rounded-2xl transition-all shrink-0 ${role === tab.id ? 'bg-white text-indigo-600 shadow-xl' : 'text-slate-400 hover:text-slate-600'}`}
               >
                 {tab.icon} {tab.label}
               </button>
@@ -80,9 +89,10 @@ const LoginPage: React.FC<LoginPageProps> = ({ onLogin, teachers }) => {
             <div className="space-y-4">
               <div>
                 <label className="block text-[10px] font-black text-slate-400 mb-2 px-1 uppercase tracking-widest italic">Identitas Pengguna</label>
-                {role === UserRole.ADMIN ? (
+                {role === UserRole.ADMIN || role === UserRole.KEPALA_SEKOLAH ? (
                    <div className="w-full px-6 py-4 rounded-2xl bg-slate-50 border border-slate-100 text-slate-500 text-xs font-black flex items-center gap-3 italic">
-                      <ShieldCheck size={18} className="text-indigo-500" /> administrator_system
+                      {role === UserRole.ADMIN ? <ShieldCheck size={18} className="text-indigo-500" /> : <GraduationCap size={18} className="text-indigo-500" />} 
+                      {role === UserRole.ADMIN ? 'administrator_system' : 'kepala_sekolah'}
                    </div>
                 ) : (
                   <select 
