@@ -1,0 +1,237 @@
+import React, { useState, useEffect, useRef } from 'react';
+import { User, AttendanceRecord, AttendanceStatus, Teacher, AppSettings, ScheduleEntry } from './types';
+import { NOTE_CHOICES, MAPEL_NAME_MAP } from '../constants';
+import { useNavigate } from 'react-router-dom';
+import { ArrowLeft, Save, Calendar, AlertTriangle, ShieldCheck, Loader2, XCircle } from 'lucide-react';
+
+interface AttendanceFormProps {
+  user: User;
+  onSave: (records: AttendanceRecord[]) => void;
+  attendanceData: AttendanceRecord[];
+  teachers: Teacher[];
+  settings: AppSettings;
+  schedule: ScheduleEntry[];
+}
+
+interface BlockEntry {
+  jams: string[]; 
+  id_guru: string;
+  nama_guru: string;
+  mapel: string;
+  status: AttendanceStatus;
+  catatan: string;
+  isAdminControlled?: boolean;
+}
+
+const AttendanceForm: React.FC<AttendanceFormProps> = ({ user, onSave, attendanceData, teachers, settings, schedule }) => {
+  const navigate = useNavigate();
+  const [date, setDate] = useState(new Date().toISOString().split('T')[0]);
+  const [dayName, setDayName] = useState('');
+  const [blocks, setBlocks] = useState<BlockEntry[]>([]);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  
+  const lastLoadedRef = useRef<string>("");
+
+  const todayEvent = (settings?.events || []).find(e => e.tanggal === date);
+  const isHoliday = todayEvent?.tipe === 'LIBUR' || todayEvent?.tipe === 'KEGIATAN';
+
+  useEffect(() => {
+    const d = new Date(date);
+    const dayNames = ['MINGGU', 'SENIN', 'SELASA', 'RABU', 'KAMIS', 'JUM\'AT', 'SABTU'];
+    const selectedDay = dayNames[d.getDay()];
+    setDayName(selectedDay);
+
+    const loadKey = `${date}-${user.kelas}`;
+    
+    if (lastLoadedRef.current !== loadKey) {
+      const safeAttendanceData = Array.isArray(attendanceData) ? attendanceData : [];
+      const existingForDate = safeAttendanceData.filter(a => a.tanggal === date && a.id_kelas === user.kelas);
+
+      if (user.kelas && !isHoliday && Array.isArray(schedule)) {
+        let daySchedule = schedule.filter(s => s.hari === selectedDay && s.mapping && s.mapping[user.kelas || ''] && s.kegiatan === 'KBM');
+        
+        if (todayEvent?.tipe === 'JAM_KHUSUS' && Array.isArray(todayEvent.affected_jams)) {
+          daySchedule = daySchedule.filter(s => !todayEvent.affected_jams?.includes(s.jam));
+        }
+
+        const groupedBlocks: BlockEntry[] = [];
+        let currentBlock: null | BlockEntry = null;
+
+        daySchedule.forEach((s) => {
+          const mappingValue = s.mapping[user.kelas || ''];
+          if (!mappingValue || !mappingValue.includes('-')) return;
+
+          const [mapelShort, teacherId] = mappingValue.split('-');
+          const teacher = (teachers || []).find(t => t.id === teacherId);
+          const fullMapel = MAPEL_NAME_MAP[mapelShort] || mapelShort;
+          
+          const adminEntry = safeAttendanceData.find(a => a.tanggal === date && a.id_guru === teacherId && a.is_admin_input);
+          const existingRecord = existingForDate.find(e => e.jam === s.jam);
+
+          if (currentBlock && currentBlock.id_guru === teacherId && currentBlock.mapel === fullMapel && currentBlock.isAdminControlled === !!adminEntry) {
+            currentBlock.jams.push(s.jam);
+          } else {
+            currentBlock = {
+              jams: [s.jam],
+              id_guru: teacherId,
+              nama_guru: teacher?.nama || teacherId,
+              mapel: fullMapel,
+              status: adminEntry ? adminEntry.status : (existingRecord ? existingRecord.status : AttendanceStatus.HADIR),
+              catatan: adminEntry ? adminEntry.catatan || '' : (existingRecord ? existingRecord.catatan || 'Hadir tepat waktu' : 'Hadir tepat waktu'),
+              isAdminControlled: !!adminEntry
+            };
+            groupedBlocks.push(currentBlock);
+          }
+        });
+        setBlocks(groupedBlocks);
+        lastLoadedRef.current = loadKey;
+      } else {
+        setBlocks([]);
+      }
+    }
+  }, [date, user.kelas, teachers, attendanceData, settings, isHoliday, schedule]);
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (blocks.length === 0 || isSubmitting) return;
+
+    setIsSubmitting(true);
+    setErrorMessage(null);
+    
+    try {
+      const recordsToSave: AttendanceRecord[] = [];
+      blocks.forEach(block => {
+        block.jams.forEach(jam => {
+          recordsToSave.push({
+            id: `${date}-${user.kelas}-${jam}`,
+            id_guru: block.id_guru, 
+            nama_guru: block.nama_guru, 
+            mapel: block.mapel, 
+            id_kelas: user.kelas || '',
+            tanggal: date, 
+            jam: jam, 
+            status: block.status, 
+            catatan: block.catatan, 
+            is_admin_input: block.isAdminControlled
+          });
+        });
+      });
+      
+      await onSave(recordsToSave);
+      alert('Laporan berhasil disimpan ke Cloud!');
+      navigate('/');
+    } catch (err: any) {
+      const msg = err.message || "Terjadi kesalahan sinkronisasi Spreadsheet";
+      setErrorMessage(msg);
+      console.error("Submit error detail:", err);
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const getStatusColor = (status: AttendanceStatus, isActive: boolean) => {
+    if (!isActive) return 'bg-slate-50 text-slate-400 border-slate-100';
+    switch(status) {
+      case AttendanceStatus.HADIR: return 'bg-emerald-600 text-white border-emerald-700 shadow-lg';
+      case AttendanceStatus.IZIN: return 'bg-blue-600 text-white border-blue-700 shadow-lg';
+      case AttendanceStatus.SAKIT: return 'bg-amber-500 text-white border-amber-600 shadow-lg';
+      case AttendanceStatus.TIDAK_HADIR: return 'bg-rose-600 text-white border-rose-700 shadow-lg';
+      default: return 'bg-slate-900 text-white';
+    }
+  };
+
+  return (
+    <div className="max-w-4xl mx-auto animate-in fade-in slide-in-from-bottom-6 duration-700">
+      <div className="mb-8 flex flex-col sm:flex-row sm:items-end justify-between gap-6">
+        <div className="flex items-center gap-6">
+          <button onClick={() => navigate('/')} className="w-14 h-14 flex items-center justify-center bg-white rounded-[22px] shadow-lg text-slate-400 hover:text-indigo-600 transition-all border border-slate-50"><ArrowLeft size={24} /></button>
+          <div><h1 className="text-2xl font-black text-slate-900 tracking-tighter uppercase italic">Laporan Kehadiran</h1><p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mt-2">{dayName} • KELAS {user.kelas} • SMPN 3 PACET</p></div>
+        </div>
+        <div className="bg-white px-6 py-4 rounded-[22px] border border-slate-100 flex items-center gap-4 shadow-xl">
+           <Calendar className="text-indigo-600" size={20} /><input type="date" className="outline-none text-[10px] font-black text-slate-800 bg-transparent uppercase italic" value={date} onChange={(e) => {
+             setDate(e.target.value);
+             lastLoadedRef.current = "";
+           }}/>
+        </div>
+      </div>
+
+      {errorMessage && (
+        <div className="bg-rose-50 border border-rose-100 p-6 rounded-[28px] mb-8 flex items-start gap-4 animate-in slide-in-from-top-4">
+           <XCircle className="text-rose-500 shrink-0" size={24} />
+           <div>
+              <p className="text-[10px] font-black text-rose-500 uppercase tracking-widest mb-1">Gagal Sinkronisasi Cloud</p>
+              <p className="text-xs font-bold text-rose-900 leading-relaxed">{errorMessage}</p>
+              <p className="text-[9px] text-rose-400 mt-2 font-black uppercase italic">Pastikan koneksi internet stabil & Spreadsheet Web App Aktif.</p>
+           </div>
+        </div>
+      )}
+
+      {isHoliday ? (
+        <div className="bg-white p-24 rounded-[40px] text-center border border-slate-100 shadow-2xl">
+           <AlertTriangle className="mx-auto text-amber-400 mb-6" size={80} />
+           <h3 className="text-2xl font-black text-slate-900 uppercase italic">Input Terkunci</h3>
+           <p className="text-slate-400 font-bold text-xs mt-3 uppercase tracking-widest tracking-widest italic">{todayEvent?.nama || 'HARI INI LIBUR SEKOLAH'}</p>
+        </div>
+      ) : blocks.length > 0 ? (
+        <form onSubmit={handleSubmit} className="space-y-6 pb-24">
+           {blocks.map((block, idx) => (
+             <div key={idx} className={`bg-white rounded-[40px] p-8 border border-slate-100 shadow-2xl ${block.isAdminControlled ? 'bg-indigo-50/50 border-indigo-100 ring-2 ring-indigo-500/10' : ''}`}>
+                <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-center">
+                   <div className="lg:col-span-5">
+                      <div className="flex items-center gap-3 mb-4">
+                         <span className="bg-slate-900 text-white px-4 py-1.5 rounded-xl text-[9px] font-black uppercase tracking-widest">Jam {block.jams.join(', ')}</span>
+                         {block.isAdminControlled && <span className="bg-indigo-600 text-white px-4 py-1.5 rounded-xl text-[9px] font-black uppercase flex items-center gap-2 italic tracking-widest"><ShieldCheck size={12}/> Admin Control</span>}
+                      </div>
+                      <p className="text-[10px] font-black text-indigo-600 uppercase italic tracking-[0.2em] mb-1">{block.mapel}</p>
+                      <h3 className="text-xl font-black text-slate-900 uppercase italic tracking-tighter leading-tight">{block.nama_guru}</h3>
+                   </div>
+                   <div className="lg:col-span-7">
+                      <div className="grid grid-cols-2 md:grid-cols-4 gap-2 mb-4">
+                         {(Object.values(AttendanceStatus) as string[]).map((s: string) => (
+                           <button 
+                             key={s} 
+                             type="button" 
+                             disabled={block.isAdminControlled || isSubmitting} 
+                             onClick={() => {
+                               const nb = [...blocks]; 
+                               nb[idx].status = s as AttendanceStatus; 
+                               setBlocks(nb);
+                             }} 
+                             className={`py-4 rounded-2xl text-[9px] font-black uppercase border transition-all tracking-widest ${getStatusColor(s as AttendanceStatus, block.status === (s as AttendanceStatus))} ${block.isAdminControlled ? 'opacity-50' : ''}`}
+                           >
+                             {s}
+                           </button>
+                         ))}
+                      </div>
+                      <select disabled={block.isAdminControlled || isSubmitting} className="w-full bg-slate-50 border border-slate-100 px-6 py-4 rounded-2xl text-[10px] font-black uppercase outline-none focus:bg-white transition-all tracking-widest italic" value={block.catatan} onChange={e => {
+                          const nb = [...blocks]; nb[idx].catatan = e.target.value; setBlocks(nb);
+                        }}>
+                         {(NOTE_CHOICES as string[]).map((n: string) => <option key={n} value={n}>{n}</option>)}
+                      </select>
+                   </div>
+                </div>
+             </div>
+           ))}
+           <div className="fixed bottom-10 left-1/2 -translate-x-1/2 w-full max-w-lg px-6 z-50">
+              <button 
+                type="submit" 
+                disabled={isSubmitting}
+                className={`w-full ${isSubmitting ? 'bg-slate-400' : 'bg-emerald-600 hover:bg-emerald-700'} text-white font-black py-6 rounded-[32px] shadow-2xl flex items-center justify-center gap-4 uppercase tracking-widest text-[11px] transition-all active:scale-95`}
+              >
+                {isSubmitting ? <Loader2 size={24} className="animate-spin" /> : <Save size={24} />} 
+                {isSubmitting ? 'MENGIRIM KE CLOUD...' : 'SIMPAN SEMUA LAPORAN'}
+              </button>
+           </div>
+        </form>
+      ) : (
+        <div className="bg-white p-24 rounded-[40px] text-center border border-slate-100 shadow-2xl italic">
+           <h3 className="text-2xl font-black text-slate-900 uppercase italic">JADWAL KOSONG</h3>
+           <p className="text-slate-400 font-bold text-[10px] mt-3 uppercase tracking-widest italic">Tidak ada agenda mengajar di jam ini</p>
+        </div>
+      )}
+    </div>
+  );
+};
+
+export default AttendanceForm;
