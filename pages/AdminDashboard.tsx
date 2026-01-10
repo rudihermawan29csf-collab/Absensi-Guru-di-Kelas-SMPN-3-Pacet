@@ -29,6 +29,17 @@ interface AdminDashboardProps {
 type AdminTab = 'overview' | 'monitoring' | 'permits' | 'agenda' | 'teachers' | 'schedule' | 'settings';
 type TimeFilter = 'harian' | 'mingguan' | 'bulanan' | 'semester';
 
+interface GroupedPermit {
+  date: string;
+  teacherId: string;
+  teacherName: string;
+  classId: string;
+  status: AttendanceStatus;
+  note: string;
+  jams: string[];
+  ids: string[];
+}
+
 const AdminDashboard: React.FC<AdminDashboardProps> = ({ 
   user, data, teachers, setTeachers, schedule, setSchedule, settings, setSettings, onSaveAttendance 
 }) => {
@@ -40,7 +51,6 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const [searchTeacher, setSearchTeacher] = useState('');
   const [scheduleDay, setScheduleDay] = useState('SENIN');
 
-  // Specific Filters for Permits Tab
   const [permitTeacherFilter, setPermitTeacherFilter] = useState('');
   const [permitMonthFilter, setPermitMonthFilter] = useState(new Date().getMonth() + 1 < 10 ? `0${new Date().getMonth() + 1}` : `${new Date().getMonth() + 1}`);
 
@@ -51,16 +61,11 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const [selectedClassId, setSelectedClassId] = useState(CLASSES[0].id);
   const [selectedTeacherId, setSelectedTeacherId] = useState('');
 
-  // Helper to ensure date is YYYY-MM-DD
   const formatSimpleDate = (dateStr: any) => {
     if (!dateStr) return '';
     const str = String(dateStr);
-    // Handle ISO strings like "2026-01-08T17:00:00.000Z"
     if (str.includes('T')) {
       const dateObj = new Date(str);
-      // Because ISO usually stores as UTC, we might need to adjust for local if it's "the night before"
-      // But usually, simple split is safer if the database stores it as a literal date
-      // If it looks like 17:00:00Z it's almost certainly a UTC date meant for the NEXT day in WIB
       if (str.includes('17:00:00')) {
         dateObj.setHours(dateObj.getHours() + 7);
       }
@@ -69,14 +74,38 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
     return str;
   };
 
-  // Auto-select first teacher if not set
+  const formatJamRange = (jams: string[]) => {
+    const sorted = jams.map(Number).sort((a, b) => a - b);
+    if (sorted.length === 0) return '';
+    
+    const ranges = [];
+    let start = sorted[0];
+    let prev = sorted[0];
+    
+    for (let i = 1; i <= sorted.length; i++) {
+      if (i < sorted.length && sorted[i] === prev + 1) {
+        prev = sorted[i];
+      } else {
+        if (start === prev) {
+          ranges.push(`${start}`);
+        } else {
+          ranges.push(`${start}-${prev}`);
+        }
+        if (i < sorted.length) {
+          start = sorted[i];
+          prev = sorted[i];
+        }
+      }
+    }
+    return ranges.join(', ');
+  };
+
   useEffect(() => {
     if (teachers.length > 0 && !selectedTeacherId) {
       setSelectedTeacherId(teachers[0].id);
     }
   }, [teachers, selectedTeacherId]);
 
-  // Modal & Form States
   const [isTeacherModalOpen, setIsTeacherModalOpen] = useState(false);
   const [editingTeacherId, setEditingTeacherId] = useState<string | null>(null);
   const [teacherForm, setTeacherForm] = useState<Partial<Teacher>>({ id: '', nama: '', mapel: [] });
@@ -90,7 +119,6 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
     tanggal: todayStr, nama: '', tipe: 'LIBUR', affected_jams: []
   });
 
-  // Helper for safe Mapel display
   const getMapelArray = (mapel: any): string[] => {
     if (Array.isArray(mapel)) return mapel;
     if (typeof mapel === 'string' && mapel.trim() !== '') {
@@ -99,7 +127,6 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
     return [];
   };
 
-  // Helper to get teaching hours for a specific date
   const getPeriodsForDate = (dateStr: string) => {
     if (!dateStr) return [];
     const d = new Date(dateStr);
@@ -109,7 +136,6 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
     return Array.from(new Set(daySlots.map(s => String(s.jam)))).sort();
   };
 
-  // Date Range calculation
   const dateRange = useMemo(() => {
     const now = new Date();
     const end = todayStr;
@@ -145,38 +171,48 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
     });
   }, [data, dateRange]);
 
-  // Riwayat Izin Data with Robust Filtering
-  const permitHistory = useMemo(() => {
-    let base = (data || []).filter(r => r.status === AttendanceStatus.IZIN || r.status === AttendanceStatus.SAKIT);
+  const permitHistoryGrouped = useMemo(() => {
     const nowYear = new Date().getFullYear();
+    let base = (data || []).filter(r => r.status === AttendanceStatus.IZIN || r.status === AttendanceStatus.SAKIT);
 
     base = base.filter(r => {
       const cleanDate = formatSimpleDate(r.tanggal);
       const parts = cleanDate.split('-');
       if (parts.length < 2) return false;
-      
-      const year = parts[0];
-      const month = parts[1];
-      
-      const matchMonth = month === permitMonthFilter;
-      const matchYear = year === nowYear.toString();
+      const matchMonth = parts[1] === permitMonthFilter;
+      const matchYear = parts[0] === nowYear.toString();
       const matchTeacher = permitTeacherFilter ? r.id_guru === permitTeacherFilter : true;
-
       return matchMonth && matchYear && matchTeacher;
     });
 
-    return base.sort((a, b) => {
-      const dateA = formatSimpleDate(a.tanggal);
-      const dateB = formatSimpleDate(b.tanggal);
-      const dateSort = dateB.localeCompare(dateA);
-      if (dateSort !== 0) return dateSort;
+    const groups: Record<string, GroupedPermit> = {};
+
+    base.forEach(r => {
+      const cleanDate = formatSimpleDate(r.tanggal);
+      const key = `${cleanDate}_${r.id_guru}_${r.id_kelas}_${r.status}_${r.catatan || ''}`;
       
-      // Fix: Ensure jam is treated as a string to avoid TypeError 'localeCompare is not a function'
-      return String(b.jam).localeCompare(String(a.jam));
+      if (!groups[key]) {
+        groups[key] = {
+          date: cleanDate,
+          teacherId: r.id_guru,
+          teacherName: r.nama_guru,
+          classId: r.id_kelas,
+          status: r.status,
+          note: r.catatan || '',
+          jams: [String(r.jam)],
+          ids: [r.id]
+        };
+      } else {
+        if (!groups[key].jams.includes(String(r.jam))) {
+          groups[key].jams.push(String(r.jam));
+        }
+        groups[key].ids.push(r.id);
+      }
     });
+
+    return Object.values(groups).sort((a, b) => b.date.localeCompare(a.date));
   }, [data, permitTeacherFilter, permitMonthFilter]);
 
-  // Analyzed data for Overview
   const classAnalysis = useMemo(() => {
     const classRecords = filteredRecords.filter(r => r.id_kelas === selectedClassId);
     const performance: Record<string, any> = {};
@@ -215,14 +251,8 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
     };
   }, [filteredRecords, selectedTeacherId]);
 
-  // --- EXPORT FUNCTIONS ---
   const exportExcel = (data: any[], fileName: string) => {
-    // Map dates before export
-    const exportData = data.map(r => ({
-      ...r,
-      tanggal: formatSimpleDate(r.tanggal)
-    }));
-    const worksheet = XLSX.utils.json_to_sheet(exportData);
+    const worksheet = XLSX.utils.json_to_sheet(data);
     const workbook = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(workbook, worksheet, "Data");
     XLSX.writeFile(workbook, `${fileName}.xlsx`);
@@ -234,7 +264,6 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
     doc.text(title, 14, 20);
     doc.setFontSize(10);
     doc.text(`Dicetak pada: ${new Date().toLocaleString('id-ID')}`, 14, 28);
-    
     (doc as any).autoTable({
       startY: 35,
       head: headers,
@@ -245,7 +274,6 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
     doc.save(`${fileName}.pdf`);
   };
 
-  // Handlers
   const handleSaveSettings = async () => {
     setIsSavingSettings(true);
     try {
@@ -295,12 +323,20 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
-  const handleDeletePermit = async (record: AttendanceRecord) => {
-    if (!confirm(`Hapus catatan izin ${record.nama_guru} pada ${formatSimpleDate(record.tanggal)} jam ${record.jam}?`)) return;
-    const success = await spreadsheetService.deleteRecord('attendance', record.id);
-    if (success) {
+  const handleDeleteGroupedPermit = async (item: GroupedPermit) => {
+    if (!confirm(`Hapus catatan izin ${item.teacherName} pada ${item.date} untuk kelas ${item.classId} jam ${formatJamRange(item.jams)}?`)) return;
+    
+    let allSuccess = true;
+    for (const id of item.ids) {
+      const success = await spreadsheetService.deleteRecord('attendance', id);
+      if (!success) allSuccess = false;
+    }
+    
+    if (allSuccess) {
       alert('Data berhasil dihapus.');
       window.location.reload(); 
+    } else {
+      alert('Terjadi kesalahan saat menghapus beberapa record.');
     }
   };
 
@@ -321,16 +357,10 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
       alert('Pilih jam yang terkena penyesuaian!');
       return;
     }
-    
-    const event = { 
-      ...newEvent, 
-      id: editingEventId || Date.now().toString() 
-    } as SchoolEvent;
-    
+    const event = { ...newEvent, id: editingEventId || Date.now().toString() } as SchoolEvent;
     const updatedEvents = editingEventId 
       ? (settings.events || []).map(e => e.id === editingEventId ? event : e)
       : [...(settings.events || []), event];
-
     const success = await spreadsheetService.saveRecord('settings', { ...settings, events: updatedEvents });
     if (success) {
       setSettings(prev => ({ ...prev, events: updatedEvents }));
@@ -358,11 +388,7 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const handleSaveTeacher = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!teacherForm.id || !teacherForm.nama) return;
-    const newTeacher = {
-      id: teacherForm.id,
-      nama: teacherForm.nama,
-      mapel: teacherForm.mapel || []
-    } as Teacher;
+    const newTeacher = { id: teacherForm.id, nama: teacherForm.nama, mapel: teacherForm.mapel || [] } as Teacher;
     const success = await spreadsheetService.saveRecord('teachers', newTeacher);
     if (success) {
       setTeachers(prev => {
@@ -433,7 +459,6 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
                 </div>
              </div>
           </div>
-
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
             {[
               { label: 'Hadir', val: filteredRecords.filter(r => r.status === AttendanceStatus.HADIR).length, color: 'emerald', icon: <CheckCircle2 size={18}/> },
@@ -447,7 +472,6 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
               </div>
             ))}
           </div>
-
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
             <div className="bg-white p-8 rounded-[40px] border border-slate-100 shadow-2xl">
               <div className="flex items-center justify-between mb-8">
@@ -459,19 +483,6 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
                       {CLASSES.map(c => <option key={c.id} value={c.id}>KELAS {c.id}</option>)}
                     </select>
                  </div>
-              </div>
-              <div className="grid grid-cols-4 gap-2 mb-8">
-                {[
-                  { label: 'Hadir', val: classAnalysis.stats.hadir, color: 'text-emerald-500', bg: 'bg-emerald-50' },
-                  { label: 'Izin', val: classAnalysis.stats.izin, color: 'text-indigo-500', bg: 'bg-indigo-50' },
-                  { label: 'Sakit', val: classAnalysis.stats.sakit, color: 'text-amber-500', bg: 'bg-amber-50' },
-                  { label: 'Alpha', val: classAnalysis.stats.alpha, color: 'text-rose-500', bg: 'bg-rose-50' }
-                ].map((s, i) => (
-                  <div key={i} className={`${s.bg} p-3 rounded-2xl border border-white/50 text-center`}>
-                    <p className="text-[7px] font-black uppercase text-slate-400 mb-1 leading-none">{s.label}</p>
-                    <p className={`text-sm font-black ${s.color}`}>{s.val}</p>
-                  </div>
-                ))}
               </div>
               <div className="h-64">
                 <ResponsiveContainer width="100%" height="100%">
@@ -488,7 +499,6 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
                 </ResponsiveContainer>
               </div>
             </div>
-
             <div className="bg-white p-8 rounded-[40px] border border-slate-100 shadow-2xl">
                <div className="flex items-center justify-between mb-8">
                  <h3 className="text-xs font-black uppercase italic text-slate-800 flex items-center gap-2"><UserCheck size={16} className="text-indigo-600"/> Analisis Per Guru</h3>
@@ -499,19 +509,6 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
                       {teachers.map(t => <option key={t.id} value={t.id}>{t.nama}</option>)}
                     </select>
                  </div>
-              </div>
-              <div className="grid grid-cols-4 gap-2 mb-8">
-                {[
-                  { label: 'Hadir', val: teacherAnalysis.stats.hadir, color: 'text-emerald-500', bg: 'bg-emerald-50' },
-                  { label: 'Izin', val: teacherAnalysis.stats.izin, color: 'text-indigo-500', bg: 'bg-indigo-50' },
-                  { label: 'Sakit', val: teacherAnalysis.stats.sakit, color: 'text-amber-500', bg: 'bg-amber-50' },
-                  { label: 'Alpha', val: teacherAnalysis.stats.alpha, color: 'text-rose-500', bg: 'bg-rose-50' }
-                ].map((s, i) => (
-                  <div key={i} className={`${s.bg} p-3 rounded-2xl border border-white/50 text-center`}>
-                    <p className="text-[7px] font-black uppercase text-slate-400 mb-1 leading-none">{s.label}</p>
-                    <p className={`text-sm font-black ${s.color}`}>{s.val}</p>
-                  </div>
-                ))}
               </div>
               <div className="h-64">
                 <ResponsiveContainer width="100%" height="100%">
@@ -568,67 +565,50 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
               <button onClick={handleApplyPermit} className="w-full bg-indigo-600 text-white font-black py-5 rounded-[22px] shadow-xl hover:bg-indigo-700 transition-all text-[11px] uppercase tracking-widest flex items-center justify-center gap-3 active:scale-95"><Save size={18}/> Kirim Laporan Izin</button>
            </div>
 
-           {/* RIWAYAT IZIN WITH ADVANCED FILTERS */}
+           {/* RIWAYAT IZIN CONSOLIDATED */}
            <div className="bg-white rounded-[40px] border border-slate-100 shadow-2xl overflow-hidden">
               <div className="p-8 border-b border-slate-50 bg-slate-50/30">
                 <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-6">
                    <h3 className="text-xs font-black uppercase italic text-slate-800">Manajemen Riwayat Izin</h3>
                    <div className="flex items-center gap-3">
-                      <button onClick={() => exportExcel(permitHistory, `Riwayat_Izin`)} className="bg-emerald-600 text-white px-4 py-2 rounded-xl text-[9px] font-black uppercase flex items-center gap-2"><FileSpreadsheet size={14}/> Excel</button>
-                      <button onClick={() => exportPDF(`Riwayat Izin Guru`, [["Tanggal", "Guru", "Kelas", "Jam", "Status", "Catatan"]], permitHistory.map(p => [formatSimpleDate(p.tanggal), p.nama_guru, p.id_kelas, p.jam, p.status, p.catatan]), `Riwayat_Izin`)} className="bg-rose-600 text-white px-4 py-2 rounded-xl text-[9px] font-black uppercase flex items-center gap-2"><FileText size={14}/> PDF</button>
+                      <button onClick={() => exportExcel(permitHistoryGrouped, `Riwayat_Izin`)} className="bg-emerald-600 text-white px-4 py-2 rounded-xl text-[9px] font-black uppercase flex items-center gap-2"><FileSpreadsheet size={14}/> Excel</button>
+                      <button onClick={() => exportPDF(`Riwayat Izin Guru`, [["Tanggal", "Guru", "Kelas", "Jam", "Status", "Catatan"]], permitHistoryGrouped.map(p => [p.date, p.teacherName, p.classId, formatJamRange(p.jams), p.status, p.note]), `Riwayat_Izin`)} className="bg-rose-600 text-white px-4 py-2 rounded-xl text-[9px] font-black uppercase flex items-center gap-2"><FileText size={14}/> PDF</button>
                    </div>
                 </div>
                 
-                {/* Filter Bar */}
                 <div className="flex flex-wrap items-center gap-4 bg-white p-4 rounded-3xl border border-slate-100">
                    <div className="flex items-center gap-2 shrink-0">
                       <Filter size={14} className="text-slate-400"/>
                       <span className="text-[9px] font-black uppercase text-slate-400 italic">Filter:</span>
                    </div>
-                   <select 
-                      className="bg-slate-50 border border-slate-100 px-4 py-2 rounded-xl text-[10px] font-black uppercase outline-none min-w-[160px]" 
-                      value={permitTeacherFilter} 
-                      onChange={e => setPermitTeacherFilter(e.target.value)}
-                   >
-                      <option value="">SEMUA GURU</option>
-                      {teachers.map(t => <option key={t.id} value={t.id}>{t.nama}</option>)}
-                   </select>
-                   <select 
-                      className="bg-slate-50 border border-slate-100 px-4 py-2 rounded-xl text-[10px] font-black uppercase outline-none" 
-                      value={permitMonthFilter} 
-                      onChange={e => setPermitMonthFilter(e.target.value)}
-                   >
-                      {['01','02','03','04','05','06','07','08','09','10','11','12'].map(m => (
-                        <option key={m} value={m}>{new Date(2024, parseInt(m)-1).toLocaleString('id-ID', {month: 'long'}).toUpperCase()}</option>
-                      ))}
-                   </select>
-                   {(permitTeacherFilter || permitMonthFilter !== (new Date().getMonth() + 1).toString().padStart(2, '0')) && (
-                      <button onClick={() => { setPermitTeacherFilter(''); setPermitMonthFilter((new Date().getMonth() + 1).toString().padStart(2, '0')); }} className="text-[9px] font-black text-rose-500 uppercase italic">Reset Filter</button>
-                   )}
+                   <select className="bg-slate-50 border border-slate-100 px-4 py-2 rounded-xl text-[10px] font-black uppercase outline-none min-w-[160px]" value={permitTeacherFilter} onChange={e => setPermitTeacherFilter(e.target.value)}><option value="">SEMUA GURU</option>{teachers.map(t => <option key={t.id} value={t.id}>{t.nama}</option>)}</select>
+                   <select className="bg-slate-50 border border-slate-100 px-4 py-2 rounded-xl text-[10px] font-black uppercase outline-none" value={permitMonthFilter} onChange={e => setPermitMonthFilter(e.target.value)}>{['01','02','03','04','05','06','07','08','09','10','11','12'].map(m => (<option key={m} value={m}>{new Date(2024, parseInt(m)-1).toLocaleString('id-ID', {month: 'long'}).toUpperCase()}</option>))}</select>
+                   {(permitTeacherFilter || permitMonthFilter !== (new Date().getMonth() + 1).toString().padStart(2, '0')) && (<button onClick={() => { setPermitTeacherFilter(''); setPermitMonthFilter((new Date().getMonth() + 1).toString().padStart(2, '0')); }} className="text-[9px] font-black text-rose-500 uppercase italic">Reset Filter</button>)}
                 </div>
               </div>
 
               <div className="overflow-x-auto no-scrollbar">
                  <table className="w-full text-left">
-                    <thead><tr className="bg-slate-50/50"><th className="px-8 py-5 text-[9px] font-black text-slate-400 uppercase italic">Tanggal</th><th className="px-4 py-5 text-[9px] font-black text-slate-400 uppercase italic">Guru</th><th className="px-4 py-5 text-[9px] font-black text-slate-400 uppercase italic">Kelas</th><th className="px-4 py-5 text-[9px] font-black text-slate-400 uppercase italic text-center">Status</th><th className="px-4 py-5 text-[9px] font-black text-slate-400 uppercase italic">Keterangan</th><th className="px-8 py-5 text-[9px] font-black text-slate-400 uppercase italic text-right">Aksi</th></tr></thead>
+                    <thead><tr className="bg-slate-50/50"><th className="px-8 py-5 text-[9px] font-black text-slate-400 uppercase italic">Tanggal</th><th className="px-4 py-5 text-[9px] font-black text-slate-400 uppercase italic">Guru</th><th className="px-4 py-5 text-[9px] font-black text-slate-400 uppercase italic">Kelas</th><th className="px-4 py-5 text-[9px] font-black text-slate-400 uppercase italic">Jam</th><th className="px-4 py-5 text-[9px] font-black text-slate-400 uppercase italic text-center">Status</th><th className="px-4 py-5 text-[9px] font-black text-slate-400 uppercase italic">Keterangan</th><th className="px-8 py-5 text-[9px] font-black text-slate-400 uppercase italic text-right">Aksi</th></tr></thead>
                     <tbody className="divide-y divide-slate-50">
-                       {permitHistory.length === 0 ? (
-                         <tr><td colSpan={6} className="py-20 text-center text-[10px] font-black uppercase text-slate-400 italic">Tidak ada riwayat izin ditemukan</td></tr>
+                       {permitHistoryGrouped.length === 0 ? (
+                         <tr><td colSpan={7} className="py-20 text-center text-[10px] font-black uppercase text-slate-400 italic">Tidak ada riwayat izin ditemukan</td></tr>
                        ) : (
-                         permitHistory.map((p, i) => (
+                         permitHistoryGrouped.map((p, i) => (
                            <tr key={i} className="hover:bg-slate-50/50 group">
-                              <td className="px-8 py-5 text-[10px] font-black italic">{formatSimpleDate(p.tanggal)}</td>
-                              <td className="px-4 py-5 text-[10px] font-black uppercase italic text-slate-700">{p.nama_guru}</td>
-                              <td className="px-4 py-5 text-[10px] font-black uppercase italic text-slate-400">Jam {p.jam} ({p.id_kelas})</td>
+                              <td className="px-8 py-5 text-[10px] font-black italic">{p.date}</td>
+                              <td className="px-4 py-5 text-[10px] font-black uppercase italic text-slate-700">{p.teacherName}</td>
+                              <td className="px-4 py-5 text-[10px] font-black uppercase italic text-slate-400">{p.classId}</td>
+                              <td className="px-4 py-5 text-[10px] font-black uppercase italic text-indigo-600">{formatJamRange(p.jams)}</td>
                               <td className="px-4 py-5 text-center"><span className={`px-3 py-1 rounded-lg text-[9px] font-black uppercase ${p.status === AttendanceStatus.SAKIT ? 'bg-amber-50 text-amber-600' : 'bg-indigo-50 text-indigo-600'}`}>{p.status}</span></td>
-                              <td className="px-4 py-5 text-[9px] font-bold text-slate-400 uppercase italic truncate max-w-[150px]">{p.catatan || '-'}</td>
+                              <td className="px-4 py-5 text-[9px] font-bold text-slate-400 uppercase italic truncate max-w-[150px]">{p.note || '-'}</td>
                               <td className="px-8 py-5 text-right">
                                  <div className="flex items-center justify-end gap-2 opacity-0 group-hover:opacity-100 transition-all">
                                     <button onClick={() => { 
-                                       setPermitForm({ date: formatSimpleDate(p.tanggal), teacherId: p.id_guru, status: p.status, note: p.catatan || '', type: 'SPECIFIC_HOURS', affected_jams: [String(p.jam)] });
+                                       setPermitForm({ date: p.date, teacherId: p.teacherId, status: p.status, note: p.note, type: 'SPECIFIC_HOURS', affected_jams: p.jams });
                                        window.scrollTo({ top: 0, behavior: 'smooth' });
                                     }} className="p-2 bg-indigo-50 text-indigo-600 rounded-lg hover:bg-indigo-600 hover:text-white transition-all"><Edit3 size={14}/></button>
-                                    <button onClick={() => handleDeletePermit(p)} className="p-2 bg-rose-50 text-rose-600 rounded-lg hover:bg-rose-600 hover:text-white transition-all"><Trash2 size={14}/></button>
+                                    <button onClick={() => handleDeleteGroupedPermit(p)} className="p-2 bg-rose-50 text-rose-600 rounded-lg hover:bg-rose-600 hover:text-white transition-all"><Trash2 size={14}/></button>
                                  </div>
                               </td>
                            </tr>
@@ -650,25 +630,18 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
                 {editingEventId ? 'Perbarui Agenda Sekolah' : 'Tambah Agenda / Libur Sekolah'}
               </h3>
               <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
-                 <div><label className="text-[10px] font-black text-slate-400 mb-2 block uppercase italic tracking-widest">Tanggal</label><input type="date" className="w-full bg-slate-50 border border-slate-100 px-5 py-4 rounded-2xl font-black outline-none focus:bg-white uppercase text-[11px]" value={newEvent.tanggal} onChange={e => {
-                   setNewEvent({...newEvent, tanggal: e.target.value, affected_jams: []});
-                 }}/></div>
+                 <div><label className="text-[10px] font-black text-slate-400 mb-2 block uppercase italic tracking-widest">Tanggal</label><input type="date" className="w-full bg-slate-50 border border-slate-100 px-5 py-4 rounded-2xl font-black outline-none focus:bg-white uppercase text-[11px]" value={newEvent.tanggal} onChange={e => { setNewEvent({...newEvent, tanggal: e.target.value, affected_jams: []}); }}/></div>
                  <div><label className="text-[10px] font-black text-slate-400 mb-2 block uppercase italic tracking-widest">Tipe Agenda</label><select className="w-full bg-slate-50 border border-slate-100 px-5 py-4 rounded-2xl font-black outline-none focus:bg-white text-[11px] uppercase" value={newEvent.tipe} onChange={e => setNewEvent({...newEvent, tipe: e.target.value as any, affected_jams: []})}><option value="LIBUR">LIBUR SEKOLAH</option><option value="KEGIATAN">KEGIATAN SEKOLAH</option><option value="JAM_KHUSUS">PENYESUAIAN JAM</option></select></div>
                  <div><label className="text-[10px] font-black text-slate-400 mb-2 block uppercase italic tracking-widest">Nama Agenda</label><input type="text" className="w-full bg-slate-50 border border-slate-100 px-5 py-4 rounded-2xl font-black outline-none focus:bg-white uppercase italic text-[11px]" placeholder="CONTOH: LIBUR SEMESTER" value={newEvent.nama} onChange={e => setNewEvent({...newEvent, nama: e.target.value})}/></div>
               </div>
 
-              {/* JAM KHUSUS CHECKLIST */}
               {newEvent.tipe === 'JAM_KHUSUS' && (
                 <div className="bg-slate-50 p-6 rounded-3xl border border-slate-100 mb-8">
                    <p className="text-[10px] font-black text-slate-400 mb-4 uppercase flex items-center gap-2 italic leading-none tracking-widest"><Clock size={14}/> Pilih Jam Pelajaran yang Terkena Penyesuaian:</p>
                    <div className="grid grid-cols-4 md:grid-cols-8 gap-2">
                       {getPeriodsForDate(newEvent.tanggal || '').map(jam => (
                         <label key={jam} className={`flex flex-col items-center p-3 rounded-2xl border cursor-pointer transition-all ${newEvent.affected_jams?.includes(String(jam)) ? 'bg-indigo-600 text-white border-indigo-700 shadow-lg' : 'bg-white text-slate-400 border-slate-200'}`}>
-                           <input type="checkbox" className="hidden" checked={newEvent.affected_jams?.includes(String(jam))} onChange={e => { 
-                             const currentJams = newEvent.affected_jams || [];
-                             const updated = e.target.checked ? [...currentJams, String(jam)] : currentJams.filter(j => j !== String(jam)); 
-                             setNewEvent({...newEvent, affected_jams: updated}); 
-                           }}/>
+                           <input type="checkbox" className="hidden" checked={newEvent.affected_jams?.includes(String(jam))} onChange={e => { const currentJams = newEvent.affected_jams || []; const updated = e.target.checked ? [...currentJams, String(jam)] : currentJams.filter(j => j !== String(jam)); setNewEvent({...newEvent, affected_jams: updated}); }}/>
                            <span className="text-xs font-black">{jam}</span>
                         </label>
                       ))}
@@ -681,9 +654,7 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
                     {editingEventId ? <RefreshCw size={18}/> : <Plus size={18}/>}
                     {editingEventId ? 'Perbarui Perubahan' : 'Terbitkan Agenda'}
                  </button>
-                 {editingEventId && (
-                   <button onClick={() => { setEditingEventId(null); setNewEvent({ tanggal: todayStr, nama: '', tipe: 'LIBUR', affected_jams: [] }); }} className="bg-slate-100 text-slate-500 px-8 py-5 rounded-[22px] font-black text-[11px] uppercase tracking-widest">Batal</button>
-                 )}
+                 {editingEventId && (<button onClick={() => { setEditingEventId(null); setNewEvent({ tanggal: todayStr, nama: '', tipe: 'LIBUR', affected_jams: [] }); }} className="bg-slate-100 text-slate-500 px-8 py-5 rounded-[22px] font-black text-[11px] uppercase tracking-widest">Batal</button>)}
               </div>
            </div>
            
@@ -706,9 +677,7 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
                           <td className="px-8 py-6 text-xs font-black italic">{formatSimpleDate(ev.tanggal)}</td>
                           <td className="px-4 py-6">
                             <div className="text-xs font-black uppercase italic text-slate-700">{ev.nama}</div>
-                            {ev.tipe === 'JAM_KHUSUS' && ev.affected_jams && ev.affected_jams.length > 0 && (
-                              <div className="text-[8px] text-indigo-500 font-bold mt-1">Jam Terkena: {ev.affected_jams.join(', ')}</div>
-                            )}
+                            {ev.tipe === 'JAM_KHUSUS' && ev.affected_jams && ev.affected_jams.length > 0 && (<div className="text-[8px] text-indigo-500 font-bold mt-1">Jam Terkena: {ev.affected_jams.join(', ')}</div>)}
                           </td>
                           <td className="px-4 py-6 text-center"><span className={`px-3 py-1 rounded-lg text-[9px] font-black uppercase tracking-widest ${ev.tipe === 'LIBUR' ? 'bg-rose-50 text-rose-600' : ev.tipe === 'JAM_KHUSUS' ? 'bg-amber-50 text-amber-600' : 'bg-indigo-50 text-indigo-600'}`}>{ev.tipe}</span></td>
                           <td className="px-8 py-6 text-right">
@@ -772,7 +741,6 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
                     <button onClick={() => { setIsTeacherModalOpen(true); setEditingTeacherId(null); setTeacherForm({ id: '', nama: '', mapel: [] }); }} className="bg-indigo-600 text-white font-black px-8 py-4 rounded-2xl shadow-xl shadow-indigo-100 hover:bg-indigo-700 transition-all text-[10px] uppercase tracking-widest flex items-center gap-3 active:scale-95"><Plus size={18}/> Tambah Guru</button>
                  </div>
               </div>
-
               <div className="overflow-x-auto no-scrollbar">
                  <table className="w-full text-left">
                     <thead><tr className="border-b border-slate-50"><th className="px-6 py-5 text-[9px] font-black text-slate-400 uppercase tracking-widest italic">Kode</th><th className="px-6 py-5 text-[9px] font-black text-slate-400 uppercase tracking-widest italic">Nama Lengkap</th><th className="px-6 py-5 text-[9px] font-black text-slate-400 uppercase tracking-widest italic">Mata Pelajaran</th><th className="px-6 py-5 text-[9px] font-black text-slate-400 uppercase tracking-widest italic text-right">Aksi</th></tr></thead>
@@ -854,43 +822,16 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
            <div className="bg-white p-12 rounded-[40px] border border-slate-100 shadow-2xl space-y-12">
               <div className="flex items-center gap-6 border-b border-slate-50 pb-8">
                 <div className="p-4 bg-indigo-600 text-white rounded-3xl shadow-xl shadow-indigo-100"><Settings size={32}/></div>
-                <div>
-                   <h3 className="text-lg font-black text-slate-900 uppercase italic leading-none">Pengaturan Sistem</h3>
-                   <p className="text-[10px] font-bold text-slate-400 uppercase tracking-[0.2em] mt-2 italic leading-none tracking-widest">Terintegrasi Cloud API</p>
-                </div>
+                <div><h3 className="text-lg font-black text-slate-900 uppercase italic leading-none">Pengaturan Sistem</h3><p className="text-[10px] font-bold text-slate-400 uppercase tracking-[0.2em] mt-2 italic leading-none tracking-widest">Terintegrasi Cloud API</p></div>
               </div>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-10">
-                 <div className="space-y-3">
-                    <label className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] italic ml-1 mb-2 block leading-none">Tahun Pelajaran</label>
-                    <input className="w-full bg-slate-50 border border-slate-100 px-8 py-5 rounded-3xl text-sm font-black outline-none focus:bg-white focus:ring-4 focus:ring-indigo-50 transition-all uppercase italic text-slate-800" value={settings.tahunPelajaran} onChange={e => setSettings(prev => ({...prev, tahunPelajaran: e.target.value}))}/>
-                 </div>
-                 <div className="space-y-3">
-                    <label className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] italic ml-1 mb-2 block leading-none">Semester Aktif</label>
-                    <select className="w-full bg-slate-50 border border-slate-100 px-8 py-5 rounded-3xl text-sm font-black outline-none focus:bg-white focus:ring-4 focus:ring-indigo-50 transition-all uppercase italic text-slate-800" value={settings.semester} onChange={e => setSettings(prev => ({...prev, semester: e.target.value as any}))}>
-                      <option value="Ganjil">SEMESTER GANJIL</option>
-                      <option value="Genap">SEMESTER GENAP</option>
-                    </select>
-                 </div>
+                 <div className="space-y-3"><label className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] italic ml-1 mb-2 block leading-none">Tahun Pelajaran</label><input className="w-full bg-slate-50 border border-slate-100 px-8 py-5 rounded-3xl text-sm font-black outline-none focus:bg-white focus:ring-4 focus:ring-indigo-50 transition-all uppercase italic text-slate-800" value={settings.tahunPelajaran} onChange={e => setSettings(prev => ({...prev, tahunPelajaran: e.target.value}))}/></div>
+                 <div className="space-y-3"><label className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] italic ml-1 mb-2 block leading-none">Semester Aktif</label><select className="w-full bg-slate-50 border border-slate-100 px-8 py-5 rounded-3xl text-sm font-black outline-none focus:bg-white focus:ring-4 focus:ring-indigo-50 transition-all uppercase italic text-slate-800" value={settings.semester} onChange={e => setSettings(prev => ({...prev, semester: e.target.value as any}))}><option value="Ganjil">SEMESTER GANJIL</option><option value="Genap">SEMESTER GENAP</option></select></div>
               </div>
-              <div className="pt-4">
-                 <button onClick={handleSaveSettings} disabled={isSavingSettings} className="w-full bg-indigo-600 text-white font-black py-6 rounded-3xl shadow-2xl shadow-indigo-200 hover:bg-indigo-700 transition-all text-[11px] uppercase tracking-widest flex items-center justify-center gap-4 active:scale-95">
-                    {isSavingSettings ? <RefreshCw className="animate-spin" size={20}/> : <Save size={20}/>}
-                    {isSavingSettings ? 'MENYIMPAN...' : 'SIMPAN KONFIGURASI'}
-                 </button>
-              </div>
+              <div className="pt-4"><button onClick={handleSaveSettings} disabled={isSavingSettings} className="w-full bg-indigo-600 text-white font-black py-6 rounded-3xl shadow-2xl shadow-indigo-200 hover:bg-indigo-700 transition-all text-[11px] uppercase tracking-widest flex items-center justify-center gap-4 active:scale-95">{isSavingSettings ? <RefreshCw className="animate-spin" size={20}/> : <Save size={20}/>}{isSavingSettings ? 'MENYIMPAN...' : 'SIMPAN KONFIGURASI'}</button></div>
               <div className="pt-12 border-t border-slate-50 flex flex-col md:flex-row items-center gap-10">
-                <div className="p-8 bg-slate-50 text-slate-300 rounded-[40px] shrink-0">
-                   <RefreshCw size={40} className={isRestoring ? 'animate-spin' : ''}/>
-                </div>
-                <div className="flex-1 text-center md:text-left">
-                   <h4 className="font-black text-xs uppercase italic mb-3 tracking-widest text-slate-800 leading-none tracking-widest">Reset Master Data Cloud</h4>
-                   <p className="text-[10px] text-slate-400 mb-8 font-black uppercase leading-relaxed italic tracking-wider">
-                      Hanya gunakan fitur ini jika database Cloud kosong atau berantakan. Ini akan mengirimkan data guru & jadwal statis ke Spreadsheet.
-                   </p>
-                   <button onClick={handleRestoreDefaults} disabled={isRestoring} className="bg-slate-900 text-white text-[10px] font-black uppercase px-10 py-4 rounded-2xl hover:bg-slate-800 transition-all active:scale-95">
-                      {isRestoring ? 'SEDANG RESTORASI...' : 'RESTORE MASTER DATA'}
-                   </button>
-                </div>
+                <div className="p-8 bg-slate-50 text-slate-300 rounded-[40px] shrink-0"><RefreshCw size={40} className={isRestoring ? 'animate-spin' : ''}/></div>
+                <div className="flex-1 text-center md:text-left"><h4 className="font-black text-xs uppercase italic mb-3 tracking-widest text-slate-800 leading-none tracking-widest">Reset Master Data Cloud</h4><p className="text-[10px] text-slate-400 mb-8 font-black uppercase leading-relaxed italic tracking-wider">Hanya gunakan fitur ini jika database Cloud kosong atau berantakan. Ini akan mengirimkan data guru & jadwal statis ke Spreadsheet.</p><button onClick={handleRestoreDefaults} disabled={isRestoring} className="bg-slate-900 text-white text-[10px] font-black uppercase px-10 py-4 rounded-2xl hover:bg-slate-800 transition-all active:scale-95">{isRestoring ? 'SEDANG RESTORASI...' : 'RESTORE MASTER DATA'}</button></div>
               </div>
            </div>
         </div>
@@ -900,26 +841,12 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
       {isTeacherModalOpen && isAdmin && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center p-6 bg-slate-900/60 backdrop-blur-md animate-in fade-in">
           <div className="bg-white w-full max-w-lg rounded-[40px] shadow-2xl overflow-hidden animate-in zoom-in-95 duration-300">
-             <div className="p-8 bg-indigo-600 flex items-center justify-between text-white">
-                <h3 className="font-black uppercase italic tracking-widest leading-none">{editingTeacherId ? 'Edit Data Guru' : 'Tambah Guru Baru'}</h3>
-                <button onClick={() => setIsTeacherModalOpen(false)} className="p-2 hover:bg-white/10 rounded-full transition-all active:scale-75"><X size={20}/></button>
-             </div>
+             <div className="p-8 bg-indigo-600 flex items-center justify-between text-white"><h3 className="font-black uppercase italic tracking-widest leading-none">{editingTeacherId ? 'Edit Data Guru' : 'Tambah Guru Baru'}</h3><button onClick={() => setIsTeacherModalOpen(false)} className="p-2 hover:bg-white/10 rounded-full transition-all active:scale-75"><X size={20}/></button></div>
              <form onSubmit={handleSaveTeacher} className="p-10 space-y-6">
-                <div>
-                   <label className="text-[10px] font-black text-slate-400 uppercase italic ml-1 mb-2 block leading-none tracking-widest">Kode Singkatan</label>
-                   <input type="text" required maxLength={4} className="w-full bg-slate-50 border border-slate-100 px-6 py-4 rounded-2xl font-black uppercase italic text-xs outline-none focus:bg-white" placeholder="MISAL: MH" value={teacherForm.id} onChange={e => setTeacherForm({...teacherForm, id: e.target.value.toUpperCase()})} readOnly={!!editingTeacherId}/>
-                </div>
-                <div>
-                   <label className="text-[10px] font-black text-slate-400 uppercase italic ml-1 mb-2 block leading-none tracking-widest">Nama & Gelar Lengkap</label>
-                   <input type="text" required className="w-full bg-slate-50 border border-slate-100 px-6 py-4 rounded-2xl font-black text-xs outline-none focus:bg-white uppercase italic text-slate-800" placeholder="MISAL: MOCH. HUSAIN RIFAI, S.Pd." value={teacherForm.nama} onChange={e => setTeacherForm({...teacherForm, nama: e.target.value})}/>
-                </div>
-                <div>
-                   <label className="text-[10px] font-black text-slate-400 uppercase italic ml-1 mb-2 block leading-none tracking-widest">Mata Pelajaran (Pisah dengan koma)</label>
-                   <input type="text" className="w-full bg-slate-50 border border-slate-100 px-6 py-4 rounded-2xl font-black text-xs outline-none focus:bg-white uppercase italic text-slate-800" placeholder="MISAL: Penjas Orkes, Informatika" value={getMapelArray(teacherForm.mapel).join(', ')} onChange={e => setTeacherForm({...teacherForm, mapel: e.target.value.split(',').map(s => s.trim())})}/>
-                </div>
-                <div className="pt-4">
-                   <button type="submit" className="w-full bg-indigo-600 text-white font-black py-5 rounded-[22px] shadow-xl hover:bg-indigo-700 transition-all text-[11px] uppercase tracking-widest flex items-center justify-center gap-3 active:scale-95"><Save size={18}/> SIMPAN DATA GURU</button>
-                </div>
+                <div><label className="text-[10px] font-black text-slate-400 uppercase italic ml-1 mb-2 block leading-none tracking-widest">Kode Singkatan</label><input type="text" required maxLength={4} className="w-full bg-slate-50 border border-slate-100 px-6 py-4 rounded-2xl font-black uppercase italic text-xs outline-none focus:bg-white" placeholder="MISAL: MH" value={teacherForm.id} onChange={e => setTeacherForm({...teacherForm, id: e.target.value.toUpperCase()})} readOnly={!!editingTeacherId}/></div>
+                <div><label className="text-[10px] font-black text-slate-400 uppercase italic ml-1 mb-2 block leading-none tracking-widest">Nama & Gelar Lengkap</label><input type="text" required className="w-full bg-slate-50 border border-slate-100 px-6 py-4 rounded-2xl font-black text-xs outline-none focus:bg-white uppercase italic text-slate-800" placeholder="MISAL: MOCH. HUSAIN RIFAI, S.Pd." value={teacherForm.nama} onChange={e => setTeacherForm({...teacherForm, nama: e.target.value})}/></div>
+                <div><label className="text-[10px] font-black text-slate-400 uppercase italic ml-1 mb-2 block leading-none tracking-widest">Mata Pelajaran (Pisah dengan koma)</label><input type="text" className="w-full bg-slate-50 border border-slate-100 px-6 py-4 rounded-2xl font-black text-xs outline-none focus:bg-white uppercase italic text-slate-800" placeholder="MISAL: Penjas Orkes, Informatika" value={getMapelArray(teacherForm.mapel).join(', ')} onChange={e => setTeacherForm({...teacherForm, mapel: e.target.value.split(',').map(s => s.trim())})}/></div>
+                <div className="pt-4"><button type="submit" className="w-full bg-indigo-600 text-white font-black py-5 rounded-[22px] shadow-xl hover:bg-indigo-700 transition-all text-[11px] uppercase tracking-widest flex items-center justify-center gap-3 active:scale-95"><Save size={18}/> SIMPAN DATA GURU</button></div>
              </form>
           </div>
         </div>
