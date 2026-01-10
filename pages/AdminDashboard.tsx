@@ -51,6 +51,24 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const [selectedClassId, setSelectedClassId] = useState(CLASSES[0].id);
   const [selectedTeacherId, setSelectedTeacherId] = useState('');
 
+  // Helper to ensure date is YYYY-MM-DD
+  const formatSimpleDate = (dateStr: any) => {
+    if (!dateStr) return '';
+    const str = String(dateStr);
+    // Handle ISO strings like "2026-01-08T17:00:00.000Z"
+    if (str.includes('T')) {
+      const dateObj = new Date(str);
+      // Because ISO usually stores as UTC, we might need to adjust for local if it's "the night before"
+      // But usually, simple split is safer if the database stores it as a literal date
+      // If it looks like 17:00:00Z it's almost certainly a UTC date meant for the NEXT day in WIB
+      if (str.includes('17:00:00')) {
+        dateObj.setHours(dateObj.getHours() + 7);
+      }
+      return dateObj.toISOString().split('T')[0];
+    }
+    return str;
+  };
+
   // Auto-select first teacher if not set
   useEffect(() => {
     if (teachers.length > 0 && !selectedTeacherId) {
@@ -88,7 +106,7 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
     const dayNames = ['MINGGU', 'SENIN', 'SELASA', 'RABU', 'KAMIS', 'JUM\'AT', 'SABTU'];
     const targetDay = dayNames[d.getDay()];
     const daySlots = schedule.filter(s => s.hari === targetDay);
-    return Array.from(new Set(daySlots.map(s => s.jam))).sort();
+    return Array.from(new Set(daySlots.map(s => String(s.jam)))).sort();
   };
 
   // Date Range calculation
@@ -121,27 +139,41 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
   }, [timeFilter, selectedMonth, settings.semester, todayStr]);
 
   const filteredRecords = useMemo(() => {
-    return (data || []).filter(r => r.tanggal >= dateRange.start && r.tanggal <= dateRange.end);
+    return (data || []).filter(r => {
+      const cleanDate = formatSimpleDate(r.tanggal);
+      return cleanDate >= dateRange.start && cleanDate <= dateRange.end;
+    });
   }, [data, dateRange]);
 
-  // Riwayat Izin Data with Enhanced Filters
+  // Riwayat Izin Data with Robust Filtering
   const permitHistory = useMemo(() => {
     let base = (data || []).filter(r => r.status === AttendanceStatus.IZIN || r.status === AttendanceStatus.SAKIT);
-    
-    // Apply Month Filter from Permits Tab
-    const now = new Date();
+    const nowYear = new Date().getFullYear();
+
     base = base.filter(r => {
-      const rDate = new Date(r.tanggal);
-      const mStr = rDate.getMonth() + 1 < 10 ? `0${rDate.getMonth() + 1}` : `${rDate.getMonth() + 1}`;
-      return mStr === permitMonthFilter && rDate.getFullYear() === now.getFullYear();
+      const cleanDate = formatSimpleDate(r.tanggal);
+      const parts = cleanDate.split('-');
+      if (parts.length < 2) return false;
+      
+      const year = parts[0];
+      const month = parts[1];
+      
+      const matchMonth = month === permitMonthFilter;
+      const matchYear = year === nowYear.toString();
+      const matchTeacher = permitTeacherFilter ? r.id_guru === permitTeacherFilter : true;
+
+      return matchMonth && matchYear && matchTeacher;
     });
 
-    // Apply Teacher Filter
-    if (permitTeacherFilter) {
-      base = base.filter(r => r.id_guru === permitTeacherFilter);
-    }
-
-    return base.sort((a, b) => b.tanggal.localeCompare(a.tanggal));
+    return base.sort((a, b) => {
+      const dateA = formatSimpleDate(a.tanggal);
+      const dateB = formatSimpleDate(b.tanggal);
+      const dateSort = dateB.localeCompare(dateA);
+      if (dateSort !== 0) return dateSort;
+      
+      // Fix: Ensure jam is treated as a string to avoid TypeError 'localeCompare is not a function'
+      return String(b.jam).localeCompare(String(a.jam));
+    });
   }, [data, permitTeacherFilter, permitMonthFilter]);
 
   // Analyzed data for Overview
@@ -185,9 +217,14 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
   // --- EXPORT FUNCTIONS ---
   const exportExcel = (data: any[], fileName: string) => {
-    const worksheet = XLSX.utils.json_to_sheet(data);
+    // Map dates before export
+    const exportData = data.map(r => ({
+      ...r,
+      tanggal: formatSimpleDate(r.tanggal)
+    }));
+    const worksheet = XLSX.utils.json_to_sheet(exportData);
     const workbook = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(workbook, worksheet, "Sheet1");
+    XLSX.utils.book_append_sheet(workbook, worksheet, "Data");
     XLSX.writeFile(workbook, `${fileName}.xlsx`);
   };
 
@@ -226,7 +263,7 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
     
     if (permitForm.type === 'SPECIFIC_HOURS') {
       if (permitForm.affected_jams.length === 0) { alert('Pilih jam!'); return; }
-      teacherSchedule = teacherSchedule.filter(s => permitForm.affected_jams.includes(s.jam));
+      teacherSchedule = teacherSchedule.filter(s => permitForm.affected_jams.includes(String(s.jam)));
     }
     
     const records: AttendanceRecord[] = [];
@@ -242,7 +279,7 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
             mapel: mapping.split('-')[0],
             id_kelas: cls.id,
             tanggal: permitForm.date,
-            jam: slot.jam,
+            jam: String(slot.jam),
             status: permitForm.status,
             catatan: permitForm.note,
             is_admin_input: true
@@ -255,17 +292,15 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
     await onSaveAttendance(records);
     alert('Laporan izin berhasil diproses.');
     setPermitForm({ ...permitForm, affected_jams: [] });
-    // Scroll to top or just reset
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
   const handleDeletePermit = async (record: AttendanceRecord) => {
-    if (!confirm(`Hapus catatan izin ${record.nama_guru} pada ${record.tanggal} jam ${record.jam}?`)) return;
+    if (!confirm(`Hapus catatan izin ${record.nama_guru} pada ${formatSimpleDate(record.tanggal)} jam ${record.jam}?`)) return;
     const success = await spreadsheetService.deleteRecord('attendance', record.id);
     if (success) {
       alert('Data berhasil dihapus.');
-      // Refresh logic is usually handled by parent App.tsx fetching again or local filter
-      window.location.reload(); // Quick sync
+      window.location.reload(); 
     }
   };
 
@@ -522,8 +557,8 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
                    <p className="text-[10px] font-black text-slate-400 mb-4 uppercase flex items-center gap-2 italic leading-none"><Clock size={14}/> Pilih Jam Mengajar:</p>
                    <div className="grid grid-cols-4 md:grid-cols-8 gap-2">
                       {getPeriodsForDate(permitForm.date).map(jam => (
-                        <label key={jam} className={`flex flex-col items-center p-3 rounded-2xl border cursor-pointer transition-all ${permitForm.affected_jams.includes(jam) ? 'bg-indigo-600 text-white border-indigo-700 shadow-lg' : 'bg-white text-slate-400 border-slate-200'}`}>
-                           <input type="checkbox" className="hidden" checked={permitForm.affected_jams.includes(jam)} onChange={e => { const updated = e.target.checked ? [...permitForm.affected_jams, jam] : permitForm.affected_jams.filter(j => j !== jam); setPermitForm({...permitForm, affected_jams: updated}); }}/>
+                        <label key={jam} className={`flex flex-col items-center p-3 rounded-2xl border cursor-pointer transition-all ${permitForm.affected_jams.includes(String(jam)) ? 'bg-indigo-600 text-white border-indigo-700 shadow-lg' : 'bg-white text-slate-400 border-slate-200'}`}>
+                           <input type="checkbox" className="hidden" checked={permitForm.affected_jams.includes(String(jam))} onChange={e => { const updated = e.target.checked ? [...permitForm.affected_jams, String(jam)] : permitForm.affected_jams.filter(j => j !== String(jam)); setPermitForm({...permitForm, affected_jams: updated}); }}/>
                            <span className="text-xs font-black">{jam}</span>
                         </label>
                       ))}
@@ -540,7 +575,7 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
                    <h3 className="text-xs font-black uppercase italic text-slate-800">Manajemen Riwayat Izin</h3>
                    <div className="flex items-center gap-3">
                       <button onClick={() => exportExcel(permitHistory, `Riwayat_Izin`)} className="bg-emerald-600 text-white px-4 py-2 rounded-xl text-[9px] font-black uppercase flex items-center gap-2"><FileSpreadsheet size={14}/> Excel</button>
-                      <button onClick={() => exportPDF(`Riwayat Izin Guru`, [["Tanggal", "Guru", "Kelas", "Jam", "Status", "Catatan"]], permitHistory.map(p => [p.tanggal, p.nama_guru, p.id_kelas, p.jam, p.status, p.catatan]), `Riwayat_Izin`)} className="bg-rose-600 text-white px-4 py-2 rounded-xl text-[9px] font-black uppercase flex items-center gap-2"><FileText size={14}/> PDF</button>
+                      <button onClick={() => exportPDF(`Riwayat Izin Guru`, [["Tanggal", "Guru", "Kelas", "Jam", "Status", "Catatan"]], permitHistory.map(p => [formatSimpleDate(p.tanggal), p.nama_guru, p.id_kelas, p.jam, p.status, p.catatan]), `Riwayat_Izin`)} className="bg-rose-600 text-white px-4 py-2 rounded-xl text-[9px] font-black uppercase flex items-center gap-2"><FileText size={14}/> PDF</button>
                    </div>
                 </div>
                 
@@ -582,7 +617,7 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
                        ) : (
                          permitHistory.map((p, i) => (
                            <tr key={i} className="hover:bg-slate-50/50 group">
-                              <td className="px-8 py-5 text-[10px] font-black italic">{p.tanggal}</td>
+                              <td className="px-8 py-5 text-[10px] font-black italic">{formatSimpleDate(p.tanggal)}</td>
                               <td className="px-4 py-5 text-[10px] font-black uppercase italic text-slate-700">{p.nama_guru}</td>
                               <td className="px-4 py-5 text-[10px] font-black uppercase italic text-slate-400">Jam {p.jam} ({p.id_kelas})</td>
                               <td className="px-4 py-5 text-center"><span className={`px-3 py-1 rounded-lg text-[9px] font-black uppercase ${p.status === AttendanceStatus.SAKIT ? 'bg-amber-50 text-amber-600' : 'bg-indigo-50 text-indigo-600'}`}>{p.status}</span></td>
@@ -590,7 +625,7 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
                               <td className="px-8 py-5 text-right">
                                  <div className="flex items-center justify-end gap-2 opacity-0 group-hover:opacity-100 transition-all">
                                     <button onClick={() => { 
-                                       setPermitForm({ date: p.tanggal, teacherId: p.id_guru, status: p.status, note: p.catatan || '', type: 'SPECIFIC_HOURS', affected_jams: [p.jam] });
+                                       setPermitForm({ date: formatSimpleDate(p.tanggal), teacherId: p.id_guru, status: p.status, note: p.catatan || '', type: 'SPECIFIC_HOURS', affected_jams: [String(p.jam)] });
                                        window.scrollTo({ top: 0, behavior: 'smooth' });
                                     }} className="p-2 bg-indigo-50 text-indigo-600 rounded-lg hover:bg-indigo-600 hover:text-white transition-all"><Edit3 size={14}/></button>
                                     <button onClick={() => handleDeletePermit(p)} className="p-2 bg-rose-50 text-rose-600 rounded-lg hover:bg-rose-600 hover:text-white transition-all"><Trash2 size={14}/></button>
@@ -628,10 +663,10 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
                    <p className="text-[10px] font-black text-slate-400 mb-4 uppercase flex items-center gap-2 italic leading-none tracking-widest"><Clock size={14}/> Pilih Jam Pelajaran yang Terkena Penyesuaian:</p>
                    <div className="grid grid-cols-4 md:grid-cols-8 gap-2">
                       {getPeriodsForDate(newEvent.tanggal || '').map(jam => (
-                        <label key={jam} className={`flex flex-col items-center p-3 rounded-2xl border cursor-pointer transition-all ${newEvent.affected_jams?.includes(jam) ? 'bg-indigo-600 text-white border-indigo-700 shadow-lg' : 'bg-white text-slate-400 border-slate-200'}`}>
-                           <input type="checkbox" className="hidden" checked={newEvent.affected_jams?.includes(jam)} onChange={e => { 
+                        <label key={jam} className={`flex flex-col items-center p-3 rounded-2xl border cursor-pointer transition-all ${newEvent.affected_jams?.includes(String(jam)) ? 'bg-indigo-600 text-white border-indigo-700 shadow-lg' : 'bg-white text-slate-400 border-slate-200'}`}>
+                           <input type="checkbox" className="hidden" checked={newEvent.affected_jams?.includes(String(jam))} onChange={e => { 
                              const currentJams = newEvent.affected_jams || [];
-                             const updated = e.target.checked ? [...currentJams, jam] : currentJams.filter(j => j !== jam); 
+                             const updated = e.target.checked ? [...currentJams, String(jam)] : currentJams.filter(j => j !== String(jam)); 
                              setNewEvent({...newEvent, affected_jams: updated}); 
                            }}/>
                            <span className="text-xs font-black">{jam}</span>
@@ -657,7 +692,7 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
                 <h3 className="text-[9px] font-black uppercase italic tracking-[0.2em] text-slate-400">Daftar Agenda Terdaftar</h3>
                 <div className="flex items-center gap-3">
                    <button onClick={() => exportExcel(settings.events || [], `Agenda_Sekolah`)} className="bg-emerald-600 text-white px-4 py-2 rounded-xl text-[9px] font-black uppercase flex items-center gap-2"><FileSpreadsheet size={14}/> Excel</button>
-                   <button onClick={() => exportPDF(`Daftar Agenda Sekolah`, [["Tanggal", "Kegiatan", "Tipe", "Jam"]], (settings.events || []).map(e => [e.tanggal, e.nama, e.tipe, e.affected_jams?.join(', ') || 'Semua']), `Agenda_Sekolah`)} className="bg-rose-600 text-white px-4 py-2 rounded-xl text-[9px] font-black uppercase flex items-center gap-2"><FileText size={14}/> PDF</button>
+                   <button onClick={() => exportPDF(`Daftar Agenda Sekolah`, [["Tanggal", "Kegiatan", "Tipe", "Jam"]], (settings.events || []).map(e => [formatSimpleDate(e.tanggal), e.nama, e.tipe, e.affected_jams?.join(', ') || 'Semua']), `Agenda_Sekolah`)} className="bg-rose-600 text-white px-4 py-2 rounded-xl text-[9px] font-black uppercase flex items-center gap-2"><FileText size={14}/> PDF</button>
                 </div>
               </div>
               <table className="w-full text-left">
@@ -668,7 +703,7 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
                     ) : (
                       settings.events.map((ev, i) => (
                         <tr key={ev.id || i} className="hover:bg-slate-50/50 group">
-                          <td className="px-8 py-6 text-xs font-black italic">{ev.tanggal}</td>
+                          <td className="px-8 py-6 text-xs font-black italic">{formatSimpleDate(ev.tanggal)}</td>
                           <td className="px-4 py-6">
                             <div className="text-xs font-black uppercase italic text-slate-700">{ev.nama}</div>
                             {ev.tipe === 'JAM_KHUSUS' && ev.affected_jams && ev.affected_jams.length > 0 && (
@@ -702,10 +737,10 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
             <table className="w-full text-left">
               <thead><tr className="bg-slate-50/50"><th className="px-8 py-6 text-[9px] font-black text-slate-400 uppercase tracking-widest">Jam</th><th className="px-4 py-6 text-[9px] font-black text-slate-400 uppercase tracking-widest">Kelas</th><th className="px-4 py-6 text-[9px] font-black text-slate-400 uppercase tracking-widest">Guru</th><th className="px-8 py-6 text-[9px] font-black text-slate-400 uppercase tracking-widest text-center">Status</th></tr></thead>
               <tbody className="divide-y divide-slate-50">
-                {(filteredRecords || []).filter(r => r.tanggal === todayStr).length === 0 ? (
+                {(filteredRecords || []).filter(r => formatSimpleDate(r.tanggal) === todayStr).length === 0 ? (
                   <tr><td colSpan={4} className="py-20 text-center text-[10px] font-black uppercase text-slate-400 italic">Belum ada absensi terdaftar hari ini</td></tr>
                 ) : (
-                  (filteredRecords || []).filter(r => r.tanggal === todayStr).map((r, i) => (
+                  (filteredRecords || []).filter(r => formatSimpleDate(r.tanggal) === todayStr).map((r, i) => (
                     <tr key={i} className="hover:bg-slate-50/50">
                       <td className="px-8 py-6 text-xs font-black text-slate-500 italic">Jam {r.jam}</td>
                       <td className="px-4 py-6"><span className={`px-3 py-1 rounded-lg text-[10px] font-black ${CLASS_COLORS[r.id_kelas]}`}>{r.id_kelas}</span></td>
