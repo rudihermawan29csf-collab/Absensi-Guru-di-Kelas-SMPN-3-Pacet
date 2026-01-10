@@ -1,3 +1,4 @@
+
 import React, { useState, useMemo, useEffect } from 'react';
 import { AttendanceRecord, AttendanceStatus, Teacher, AppSettings, SchoolEvent, ScheduleEntry, User, UserRole } from './types';
 import { CLASSES, CLASS_COLORS, TEACHERS as INITIAL_TEACHERS, SCHEDULE as INITIAL_SCHEDULE, MAPEL_NAME_MAP, TEACHER_COLORS } from '../constants';
@@ -69,6 +70,17 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
       return mapel.split(',').map(s => s.trim());
     }
     return [];
+  };
+
+  // Helper to get teaching hours for a specific date
+  const getPeriodsForDate = (dateStr: string) => {
+    if (!dateStr) return [];
+    const d = new Date(dateStr);
+    const dayNames = ['MINGGU', 'SENIN', 'SELASA', 'RABU', 'KAMIS', 'JUM\'AT', 'SABTU'];
+    const targetDay = dayNames[d.getDay()];
+    const daySlots = schedule.filter(s => s.hari === targetDay);
+    // Get unique jam values
+    return Array.from(new Set(daySlots.map(s => s.jam))).sort();
   };
 
   // Date Range calculation based on filters
@@ -203,9 +215,12 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
     } finally { setIsRestoring(false); }
   };
 
-  // Fix: Missing handler functions for UI interactions
   const handleAddEvent = async () => {
     if (!newEvent.nama || !newEvent.tanggal) return;
+    if (newEvent.tipe === 'JAM_KHUSUS' && (!newEvent.affected_jams || newEvent.affected_jams.length === 0)) {
+      alert('Pilih jam yang terkena penyesuaian!');
+      return;
+    }
     const event = { ...newEvent, id: Date.now().toString() } as SchoolEvent;
     const updatedEvents = [...(settings.events || []), event];
     const success = await spreadsheetService.saveRecord('settings', { ...settings, events: updatedEvents });
@@ -409,11 +424,7 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
                 <div className="bg-slate-50 p-6 rounded-3xl border border-slate-100 mb-8">
                    <p className="text-[10px] font-black text-slate-400 mb-4 uppercase flex items-center gap-2 italic leading-none"><Clock size={14}/> Pilih Jam Mengajar:</p>
                    <div className="grid grid-cols-4 md:grid-cols-8 gap-2">
-                      {schedule.filter(s => {
-                        const d = new Date(permitForm.date);
-                        const dayNames = ['MINGGU', 'SENIN', 'SELASA', 'RABU', 'KAMIS', 'JUM\'AT', 'SABTU'];
-                        return s.hari === dayNames[d.getDay()];
-                      }).map(s => s.jam).filter((v, i, a) => a.indexOf(v) === i).sort().map(jam => (
+                      {getPeriodsForDate(permitForm.date).map(jam => (
                         <label key={jam} className={`flex flex-col items-center p-3 rounded-2xl border cursor-pointer transition-all ${permitForm.affected_jams.includes(jam) ? 'bg-indigo-600 text-white border-indigo-700 shadow-lg' : 'bg-white text-slate-400 border-slate-200'}`}>
                            <input type="checkbox" className="hidden" checked={permitForm.affected_jams.includes(jam)} onChange={e => { const updated = e.target.checked ? [...permitForm.affected_jams, jam] : permitForm.affected_jams.filter(j => j !== jam); setPermitForm({...permitForm, affected_jams: updated}); }}/>
                            <span className="text-xs font-black">{jam}</span>
@@ -423,6 +434,71 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
                 </div>
               )}
               <button onClick={handleApplyPermit} className="w-full bg-indigo-600 text-white font-black py-5 rounded-[22px] shadow-xl hover:bg-indigo-700 transition-all text-[11px] uppercase tracking-widest flex items-center justify-center gap-3 active:scale-95"><Save size={18}/> Kirim Laporan Izin</button>
+           </div>
+        </div>
+      )}
+
+      {/* AGENDA TAB */}
+      {activeTab === 'agenda' && (isAdmin || isKepalaSekolah) && (
+        <div className="max-w-4xl mx-auto space-y-8 animate-in slide-in-from-bottom-6">
+           <div className="bg-white p-10 rounded-[40px] border border-slate-100 shadow-2xl">
+              <h3 className="text-sm font-black uppercase italic mb-8 flex items-center gap-4 text-slate-800"><Calendar size={24} className="text-indigo-600"/> Tambah Agenda / Libur Sekolah</h3>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
+                 <div><label className="text-[10px] font-black text-slate-400 mb-2 block uppercase italic tracking-widest">Tanggal</label><input type="date" className="w-full bg-slate-50 border border-slate-100 px-5 py-4 rounded-2xl font-black outline-none focus:bg-white uppercase text-[11px]" value={newEvent.tanggal} onChange={e => {
+                   setNewEvent({...newEvent, tanggal: e.target.value, affected_jams: []});
+                 }}/></div>
+                 <div><label className="text-[10px] font-black text-slate-400 mb-2 block uppercase italic tracking-widest">Tipe Agenda</label><select className="w-full bg-slate-50 border border-slate-100 px-5 py-4 rounded-2xl font-black outline-none focus:bg-white text-[11px] uppercase" value={newEvent.tipe} onChange={e => setNewEvent({...newEvent, tipe: e.target.value as any, affected_jams: []})}><option value="LIBUR">LIBUR SEKOLAH</option><option value="KEGIATAN">KEGIATAN SEKOLAH</option><option value="JAM_KHUSUS">PENYESUAIAN JAM</option></select></div>
+                 <div><label className="text-[10px] font-black text-slate-400 mb-2 block uppercase italic tracking-widest">Nama Agenda</label><input type="text" className="w-full bg-slate-50 border border-slate-100 px-5 py-4 rounded-2xl font-black outline-none focus:bg-white uppercase italic text-[11px]" placeholder="CONTOH: LIBUR SEMESTER" value={newEvent.nama} onChange={e => setNewEvent({...newEvent, nama: e.target.value})}/></div>
+              </div>
+
+              {/* JAM KHUSUS CHECKLIST */}
+              {newEvent.tipe === 'JAM_KHUSUS' && (
+                <div className="bg-slate-50 p-6 rounded-3xl border border-slate-100 mb-8">
+                   <p className="text-[10px] font-black text-slate-400 mb-4 uppercase flex items-center gap-2 italic leading-none tracking-widest"><Clock size={14}/> Pilih Jam Pelajaran yang Terkena Penyesuaian:</p>
+                   <div className="grid grid-cols-4 md:grid-cols-8 gap-2">
+                      {getPeriodsForDate(newEvent.tanggal || '').map(jam => (
+                        <label key={jam} className={`flex flex-col items-center p-3 rounded-2xl border cursor-pointer transition-all ${newEvent.affected_jams?.includes(jam) ? 'bg-indigo-600 text-white border-indigo-700 shadow-lg' : 'bg-white text-slate-400 border-slate-200'}`}>
+                           <input type="checkbox" className="hidden" checked={newEvent.affected_jams?.includes(jam)} onChange={e => { 
+                             const currentJams = newEvent.affected_jams || [];
+                             const updated = e.target.checked ? [...currentJams, jam] : currentJams.filter(j => j !== jam); 
+                             setNewEvent({...newEvent, affected_jams: updated}); 
+                           }}/>
+                           <span className="text-xs font-black">{jam}</span>
+                        </label>
+                      ))}
+                   </div>
+                </div>
+              )}
+
+              <button onClick={handleAddEvent} className="w-full bg-indigo-600 text-white font-black py-5 rounded-[22px] shadow-xl hover:bg-indigo-700 transition-all text-[11px] uppercase tracking-widest flex items-center justify-center gap-3 active:scale-95"><Plus size={18}/> Terbitkan Agenda</button>
+           </div>
+           
+           <div className="bg-white rounded-[40px] border border-slate-100 shadow-2xl overflow-hidden">
+              <div className="p-8 border-b border-slate-50 bg-slate-50/30">
+                <h3 className="text-[9px] font-black uppercase italic tracking-[0.2em] text-slate-400">Daftar Agenda Terdaftar</h3>
+              </div>
+              <table className="w-full text-left">
+                 <thead><tr className="bg-slate-50/50"><th className="px-8 py-6 text-[9px] font-black text-slate-400 uppercase tracking-widest italic">Tanggal</th><th className="px-4 py-6 text-[9px] font-black text-slate-400 uppercase tracking-widest italic">Kegiatan</th><th className="px-4 py-6 text-[9px] font-black text-slate-400 uppercase tracking-widest italic text-center">Tipe</th><th className="px-8 py-6 text-[9px] font-black text-slate-400 uppercase tracking-widest italic text-right">Aksi</th></tr></thead>
+                 <tbody className="divide-y divide-slate-50">
+                    {(settings.events || []).length === 0 ? (
+                      <tr><td colSpan={4} className="py-20 text-center text-[10px] font-black uppercase text-slate-400 italic">Belum ada agenda sekolah terdaftar</td></tr>
+                    ) : (
+                      settings.events.map((ev, i) => (
+                        <tr key={ev.id || i} className="hover:bg-slate-50/50">
+                          <td className="px-8 py-6 text-xs font-black italic">{ev.tanggal}</td>
+                          <td className="px-4 py-6">
+                            <div className="text-xs font-black uppercase italic text-slate-700">{ev.nama}</div>
+                            {ev.tipe === 'JAM_KHUSUS' && ev.affected_jams && ev.affected_jams.length > 0 && (
+                              <div className="text-[8px] text-indigo-500 font-bold mt-1">Jam Terkena: {ev.affected_jams.join(', ')}</div>
+                            )}
+                          </td>
+                          <td className="px-4 py-6 text-center"><span className={`px-3 py-1 rounded-lg text-[9px] font-black uppercase tracking-widest ${ev.tipe === 'LIBUR' ? 'bg-rose-50 text-rose-600' : ev.tipe === 'JAM_KHUSUS' ? 'bg-amber-50 text-amber-600' : 'bg-indigo-50 text-indigo-600'}`}>{ev.tipe}</span></td>
+                          <td className="px-8 py-6 text-right"><button onClick={() => handleDeleteEvent(ev.id || '')} className="p-2 text-slate-300 hover:text-rose-500 transition-colors active:scale-90"><Trash2 size={18}/></button></td>
+                        </tr>
+                      ))
+                    )}
+                 </tbody>
+              </table>
            </div>
         </div>
       )}
@@ -546,44 +622,6 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
               </tbody>
             </table>
           </div>
-        </div>
-      )}
-
-      {/* AGENDA TAB */}
-      {activeTab === 'agenda' && (isAdmin || isKepalaSekolah) && (
-        <div className="max-w-4xl mx-auto space-y-8 animate-in slide-in-from-bottom-6">
-           <div className="bg-white p-10 rounded-[40px] border border-slate-100 shadow-2xl">
-              <h3 className="text-sm font-black uppercase italic mb-8 flex items-center gap-4 text-slate-800"><Calendar size={24} className="text-indigo-600"/> Tambah Agenda / Libur Sekolah</h3>
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
-                 <div><label className="text-[10px] font-black text-slate-400 mb-2 block uppercase italic tracking-widest">Tanggal</label><input type="date" className="w-full bg-slate-50 border border-slate-100 px-5 py-4 rounded-2xl font-black outline-none focus:bg-white uppercase text-[11px]" value={newEvent.tanggal} onChange={e => setNewEvent({...newEvent, tanggal: e.target.value})}/></div>
-                 <div><label className="text-[10px] font-black text-slate-400 mb-2 block uppercase italic tracking-widest">Tipe Agenda</label><select className="w-full bg-slate-50 border border-slate-100 px-5 py-4 rounded-2xl font-black outline-none focus:bg-white text-[11px] uppercase" value={newEvent.tipe} onChange={e => setNewEvent({...newEvent, tipe: e.target.value as any, affected_jams: []})}><option value="LIBUR">LIBUR SEKOLAH</option><option value="KEGIATAN">KEGIATAN SEKOLAH</option><option value="JAM_KHUSUS">PENYESUAIAN JAM</option></select></div>
-                 <div><label className="text-[10px] font-black text-slate-400 mb-2 block uppercase italic tracking-widest">Nama Agenda</label><input type="text" className="w-full bg-slate-50 border border-slate-100 px-5 py-4 rounded-2xl font-black outline-none focus:bg-white uppercase italic text-[11px]" placeholder="CONTOH: LIBUR SEMESTER" value={newEvent.nama} onChange={e => setNewEvent({...newEvent, nama: e.target.value})}/></div>
-              </div>
-              <button onClick={handleAddEvent} className="w-full bg-indigo-600 text-white font-black py-5 rounded-[22px] shadow-xl hover:bg-indigo-700 transition-all text-[11px] uppercase tracking-widest flex items-center justify-center gap-3 active:scale-95"><Plus size={18}/> Terbitkan Agenda</button>
-           </div>
-           
-           <div className="bg-white rounded-[40px] border border-slate-100 shadow-2xl overflow-hidden">
-              <div className="p-8 border-b border-slate-50 bg-slate-50/30">
-                <h3 className="text-[9px] font-black uppercase italic tracking-[0.2em] text-slate-400">Daftar Agenda Terdaftar</h3>
-              </div>
-              <table className="w-full text-left">
-                 <thead><tr className="bg-slate-50/50"><th className="px-8 py-6 text-[9px] font-black text-slate-400 uppercase tracking-widest italic">Tanggal</th><th className="px-4 py-6 text-[9px] font-black text-slate-400 uppercase tracking-widest italic">Kegiatan</th><th className="px-4 py-6 text-[9px] font-black text-slate-400 uppercase tracking-widest italic text-center">Tipe</th><th className="px-8 py-6 text-[9px] font-black text-slate-400 uppercase tracking-widest italic text-right">Aksi</th></tr></thead>
-                 <tbody className="divide-y divide-slate-50">
-                    {(settings.events || []).length === 0 ? (
-                      <tr><td colSpan={4} className="py-20 text-center text-[10px] font-black uppercase text-slate-400 italic">Belum ada agenda sekolah terdaftar</td></tr>
-                    ) : (
-                      settings.events.map((ev, i) => (
-                        <tr key={ev.id || i} className="hover:bg-slate-50/50">
-                          <td className="px-8 py-6 text-xs font-black italic">{ev.tanggal}</td>
-                          <td className="px-4 py-6 text-xs font-black uppercase italic text-slate-700">{ev.nama}</td>
-                          <td className="px-4 py-6 text-center"><span className={`px-3 py-1 rounded-lg text-[9px] font-black uppercase tracking-widest ${ev.tipe === 'LIBUR' ? 'bg-rose-50 text-rose-600' : 'bg-indigo-50 text-indigo-600'}`}>{ev.tipe}</span></td>
-                          <td className="px-8 py-6 text-right"><button onClick={() => handleDeleteEvent(ev.id || '')} className="p-2 text-slate-300 hover:text-rose-500 transition-colors active:scale-90"><Trash2 size={18}/></button></td>
-                        </tr>
-                      ))
-                    )}
-                 </tbody>
-              </table>
-           </div>
         </div>
       )}
 
