@@ -88,7 +88,6 @@ const App: React.FC = () => {
       for (const rec of newRecords) {
         await spreadsheetService.saveRecord('attendance', rec);
       }
-      // Update local state
       setAttendanceData(prev => {
         const updated = [...prev];
         newRecords.forEach(rec => {
@@ -157,11 +156,11 @@ const App: React.FC = () => {
                 user={user}
                 data={attendanceData} 
                 teachers={teachers} 
-                setTeachers={() => {}} 
+                setTeachers={setTeachers} 
                 schedule={schoolSchedule}
-                setSchedule={() => {}}
+                setSchedule={setSchoolSchedule}
                 settings={settings}
-                setSettings={() => {}}
+                setSettings={setSettings}
                 onSaveAttendance={saveAttendanceBulk}
               />
             ) :
