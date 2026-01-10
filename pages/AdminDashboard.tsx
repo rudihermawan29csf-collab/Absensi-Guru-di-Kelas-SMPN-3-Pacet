@@ -1,4 +1,3 @@
-
 import React, { useState, useMemo, useEffect } from 'react';
 import { AttendanceRecord, AttendanceStatus, Teacher, AppSettings, SchoolEvent, ScheduleEntry, User, UserRole } from './types';
 import { CLASSES, CLASS_COLORS, TEACHERS as INITIAL_TEACHERS, SCHEDULE as INITIAL_SCHEDULE, MAPEL_NAME_MAP, TEACHER_COLORS } from '../constants';
@@ -41,6 +40,10 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const [searchTeacher, setSearchTeacher] = useState('');
   const [scheduleDay, setScheduleDay] = useState('SENIN');
 
+  // Specific Filters for Permits Tab
+  const [permitTeacherFilter, setPermitTeacherFilter] = useState('');
+  const [permitMonthFilter, setPermitMonthFilter] = useState(new Date().getMonth() + 1 < 10 ? `0${new Date().getMonth() + 1}` : `${new Date().getMonth() + 1}`);
+
   const isAdmin = user.role === UserRole.ADMIN;
   const isKepalaSekolah = user.role === UserRole.KEPALA_SEKOLAH;
   const todayStr = new Date().toISOString().split('T')[0];
@@ -60,6 +63,7 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const [editingTeacherId, setEditingTeacherId] = useState<string | null>(null);
   const [teacherForm, setTeacherForm] = useState<Partial<Teacher>>({ id: '', nama: '', mapel: [] });
 
+  const [editingEventId, setEditingEventId] = useState<string | null>(null);
   const [permitForm, setPermitForm] = useState({
     date: todayStr, teacherId: '', status: AttendanceStatus.IZIN, note: 'Izin keperluan keluarga', type: 'FULL_DAY', affected_jams: [] as string[]
   });
@@ -120,10 +124,25 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
     return (data || []).filter(r => r.tanggal >= dateRange.start && r.tanggal <= dateRange.end);
   }, [data, dateRange]);
 
-  // Riwayat Izin Data
+  // Riwayat Izin Data with Enhanced Filters
   const permitHistory = useMemo(() => {
-    return filteredRecords.filter(r => r.status === AttendanceStatus.IZIN || r.status === AttendanceStatus.SAKIT);
-  }, [filteredRecords]);
+    let base = (data || []).filter(r => r.status === AttendanceStatus.IZIN || r.status === AttendanceStatus.SAKIT);
+    
+    // Apply Month Filter from Permits Tab
+    const now = new Date();
+    base = base.filter(r => {
+      const rDate = new Date(r.tanggal);
+      const mStr = rDate.getMonth() + 1 < 10 ? `0${rDate.getMonth() + 1}` : `${rDate.getMonth() + 1}`;
+      return mStr === permitMonthFilter && rDate.getFullYear() === now.getFullYear();
+    });
+
+    // Apply Teacher Filter
+    if (permitTeacherFilter) {
+      base = base.filter(r => r.id_guru === permitTeacherFilter);
+    }
+
+    return base.sort((a, b) => b.tanggal.localeCompare(a.tanggal));
+  }, [data, permitTeacherFilter, permitMonthFilter]);
 
   // Analyzed data for Overview
   const classAnalysis = useMemo(() => {
@@ -177,7 +196,7 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
     doc.setFontSize(16);
     doc.text(title, 14, 20);
     doc.setFontSize(10);
-    doc.text(`Periode: ${dateRange.start} s/d ${dateRange.end}`, 14, 28);
+    doc.text(`Dicetak pada: ${new Date().toLocaleString('id-ID')}`, 14, 28);
     
     (doc as any).autoTable({
       startY: 35,
@@ -234,8 +253,20 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
     
     if (records.length === 0) { alert('Guru tidak mengajar di hari tersebut.'); return; }
     await onSaveAttendance(records);
-    alert('Izin berhasil diproses.');
+    alert('Laporan izin berhasil diproses.');
     setPermitForm({ ...permitForm, affected_jams: [] });
+    // Scroll to top or just reset
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  const handleDeletePermit = async (record: AttendanceRecord) => {
+    if (!confirm(`Hapus catatan izin ${record.nama_guru} pada ${record.tanggal} jam ${record.jam}?`)) return;
+    const success = await spreadsheetService.deleteRecord('attendance', record.id);
+    if (success) {
+      alert('Data berhasil dihapus.');
+      // Refresh logic is usually handled by parent App.tsx fetching again or local filter
+      window.location.reload(); // Quick sync
+    }
   };
 
   const handleRestoreDefaults = async () => {
@@ -255,14 +286,29 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
       alert('Pilih jam yang terkena penyesuaian!');
       return;
     }
-    const event = { ...newEvent, id: Date.now().toString() } as SchoolEvent;
-    const updatedEvents = [...(settings.events || []), event];
+    
+    const event = { 
+      ...newEvent, 
+      id: editingEventId || Date.now().toString() 
+    } as SchoolEvent;
+    
+    const updatedEvents = editingEventId 
+      ? (settings.events || []).map(e => e.id === editingEventId ? event : e)
+      : [...(settings.events || []), event];
+
     const success = await spreadsheetService.saveRecord('settings', { ...settings, events: updatedEvents });
     if (success) {
       setSettings(prev => ({ ...prev, events: updatedEvents }));
       setNewEvent({ tanggal: todayStr, nama: '', tipe: 'LIBUR', affected_jams: [] });
-      alert('Agenda berhasil ditambahkan.');
+      setEditingEventId(null);
+      alert(editingEventId ? 'Agenda berhasil diperbarui.' : 'Agenda berhasil ditambahkan.');
     }
+  };
+
+  const handleEditEvent = (ev: SchoolEvent) => {
+    setNewEvent(ev);
+    setEditingEventId(ev.id);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
   const handleDeleteEvent = async (eventId: string) => {
@@ -461,6 +507,15 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
                  <div><label className="text-[10px] font-black text-slate-400 mb-2 block uppercase italic tracking-widest">Pilih Guru</label><select className="w-full bg-slate-50 border border-slate-100 px-5 py-4 rounded-2xl font-black outline-none focus:bg-white text-[11px] uppercase italic" value={permitForm.teacherId} onChange={e => setPermitForm({...permitForm, teacherId: e.target.value})}><option value="">-- PILIH GURU --</option>{teachers.map(t => <option key={t.id} value={t.id}>{t.nama}</option>)}</select></div>
                  <div><label className="text-[10px] font-black text-slate-400 mb-2 block uppercase italic tracking-widest">Status</label><select className="w-full bg-slate-50 border border-slate-100 px-5 py-4 rounded-2xl font-black outline-none focus:bg-white text-[11px] uppercase italic" value={permitForm.status} onChange={e => setPermitForm({...permitForm, status: e.target.value as any})}><option value={AttendanceStatus.IZIN}>IZIN</option><option value={AttendanceStatus.SAKIT}>SAKIT</option></select></div>
                  <div><label className="text-[10px] font-black text-slate-400 mb-2 block uppercase italic tracking-widest">Metode Berlaku</label><select className="w-full bg-slate-50 border border-slate-100 px-5 py-4 rounded-2xl font-black outline-none focus:bg-white text-[11px] uppercase italic" value={permitForm.type} onChange={e => setPermitForm({...permitForm, type: e.target.value as any, affected_jams: []})}><option value="FULL_DAY">SEHARIAN PENUH</option><option value="SPECIFIC_HOURS">JAM TERTENTU</option></select></div>
+                 <div className="md:col-span-2">
+                    <label className="text-[10px] font-black text-slate-400 mb-2 block uppercase italic tracking-widest">Keterangan / Alasan Izin</label>
+                    <textarea 
+                      className="w-full bg-slate-50 border border-slate-100 px-5 py-4 rounded-2xl font-black outline-none focus:bg-white text-[11px] uppercase italic min-h-[80px]" 
+                      placeholder="CONTOH: IZIN KEPERLUAN KELUARGA / SAKIT DISERTAI SURAT DOKTER"
+                      value={permitForm.note} 
+                      onChange={e => setPermitForm({...permitForm, note: e.target.value})}
+                    />
+                 </div>
               </div>
               {permitForm.type === 'SPECIFIC_HOURS' && (
                 <div className="bg-slate-50 p-6 rounded-3xl border border-slate-100 mb-8">
@@ -478,29 +533,69 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
               <button onClick={handleApplyPermit} className="w-full bg-indigo-600 text-white font-black py-5 rounded-[22px] shadow-xl hover:bg-indigo-700 transition-all text-[11px] uppercase tracking-widest flex items-center justify-center gap-3 active:scale-95"><Save size={18}/> Kirim Laporan Izin</button>
            </div>
 
-           {/* RIWAYAT IZIN */}
+           {/* RIWAYAT IZIN WITH ADVANCED FILTERS */}
            <div className="bg-white rounded-[40px] border border-slate-100 shadow-2xl overflow-hidden">
-              <div className="p-8 border-b border-slate-50 bg-slate-50/30 flex items-center justify-between">
-                <h3 className="text-xs font-black uppercase italic text-slate-800">Riwayat Izin & Sakit ({timeFilter})</h3>
-                <div className="flex items-center gap-3">
-                   <button onClick={() => exportExcel(permitHistory, `Riwayat_Izin_${timeFilter}`)} className="bg-emerald-600 text-white px-4 py-2 rounded-xl text-[9px] font-black uppercase flex items-center gap-2"><FileSpreadsheet size={14}/> Excel</button>
-                   <button onClick={() => exportPDF(`Riwayat Izin Guru - ${timeFilter}`, [["Tanggal", "Guru", "Kelas", "Jam", "Status", "Catatan"]], permitHistory.map(p => [p.tanggal, p.nama_guru, p.id_kelas, p.jam, p.status, p.catatan]), `Riwayat_Izin_${timeFilter}`)} className="bg-rose-600 text-white px-4 py-2 rounded-xl text-[9px] font-black uppercase flex items-center gap-2"><FileText size={14}/> PDF</button>
+              <div className="p-8 border-b border-slate-50 bg-slate-50/30">
+                <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-6">
+                   <h3 className="text-xs font-black uppercase italic text-slate-800">Manajemen Riwayat Izin</h3>
+                   <div className="flex items-center gap-3">
+                      <button onClick={() => exportExcel(permitHistory, `Riwayat_Izin`)} className="bg-emerald-600 text-white px-4 py-2 rounded-xl text-[9px] font-black uppercase flex items-center gap-2"><FileSpreadsheet size={14}/> Excel</button>
+                      <button onClick={() => exportPDF(`Riwayat Izin Guru`, [["Tanggal", "Guru", "Kelas", "Jam", "Status", "Catatan"]], permitHistory.map(p => [p.tanggal, p.nama_guru, p.id_kelas, p.jam, p.status, p.catatan]), `Riwayat_Izin`)} className="bg-rose-600 text-white px-4 py-2 rounded-xl text-[9px] font-black uppercase flex items-center gap-2"><FileText size={14}/> PDF</button>
+                   </div>
+                </div>
+                
+                {/* Filter Bar */}
+                <div className="flex flex-wrap items-center gap-4 bg-white p-4 rounded-3xl border border-slate-100">
+                   <div className="flex items-center gap-2 shrink-0">
+                      <Filter size={14} className="text-slate-400"/>
+                      <span className="text-[9px] font-black uppercase text-slate-400 italic">Filter:</span>
+                   </div>
+                   <select 
+                      className="bg-slate-50 border border-slate-100 px-4 py-2 rounded-xl text-[10px] font-black uppercase outline-none min-w-[160px]" 
+                      value={permitTeacherFilter} 
+                      onChange={e => setPermitTeacherFilter(e.target.value)}
+                   >
+                      <option value="">SEMUA GURU</option>
+                      {teachers.map(t => <option key={t.id} value={t.id}>{t.nama}</option>)}
+                   </select>
+                   <select 
+                      className="bg-slate-50 border border-slate-100 px-4 py-2 rounded-xl text-[10px] font-black uppercase outline-none" 
+                      value={permitMonthFilter} 
+                      onChange={e => setPermitMonthFilter(e.target.value)}
+                   >
+                      {['01','02','03','04','05','06','07','08','09','10','11','12'].map(m => (
+                        <option key={m} value={m}>{new Date(2024, parseInt(m)-1).toLocaleString('id-ID', {month: 'long'}).toUpperCase()}</option>
+                      ))}
+                   </select>
+                   {(permitTeacherFilter || permitMonthFilter !== (new Date().getMonth() + 1).toString().padStart(2, '0')) && (
+                      <button onClick={() => { setPermitTeacherFilter(''); setPermitMonthFilter((new Date().getMonth() + 1).toString().padStart(2, '0')); }} className="text-[9px] font-black text-rose-500 uppercase italic">Reset Filter</button>
+                   )}
                 </div>
               </div>
+
               <div className="overflow-x-auto no-scrollbar">
                  <table className="w-full text-left">
-                    <thead><tr className="bg-slate-50/50"><th className="px-8 py-5 text-[9px] font-black text-slate-400 uppercase italic">Tanggal</th><th className="px-4 py-5 text-[9px] font-black text-slate-400 uppercase italic">Guru</th><th className="px-4 py-5 text-[9px] font-black text-slate-400 uppercase italic">Kelas</th><th className="px-4 py-5 text-[9px] font-black text-slate-400 uppercase italic">Status</th><th className="px-8 py-5 text-[9px] font-black text-slate-400 uppercase italic">Keterangan</th></tr></thead>
+                    <thead><tr className="bg-slate-50/50"><th className="px-8 py-5 text-[9px] font-black text-slate-400 uppercase italic">Tanggal</th><th className="px-4 py-5 text-[9px] font-black text-slate-400 uppercase italic">Guru</th><th className="px-4 py-5 text-[9px] font-black text-slate-400 uppercase italic">Kelas</th><th className="px-4 py-5 text-[9px] font-black text-slate-400 uppercase italic text-center">Status</th><th className="px-4 py-5 text-[9px] font-black text-slate-400 uppercase italic">Keterangan</th><th className="px-8 py-5 text-[9px] font-black text-slate-400 uppercase italic text-right">Aksi</th></tr></thead>
                     <tbody className="divide-y divide-slate-50">
                        {permitHistory.length === 0 ? (
-                         <tr><td colSpan={5} className="py-20 text-center text-[10px] font-black uppercase text-slate-400 italic">Tidak ada riwayat izin di periode ini</td></tr>
+                         <tr><td colSpan={6} className="py-20 text-center text-[10px] font-black uppercase text-slate-400 italic">Tidak ada riwayat izin ditemukan</td></tr>
                        ) : (
                          permitHistory.map((p, i) => (
-                           <tr key={i} className="hover:bg-slate-50/50">
+                           <tr key={i} className="hover:bg-slate-50/50 group">
                               <td className="px-8 py-5 text-[10px] font-black italic">{p.tanggal}</td>
                               <td className="px-4 py-5 text-[10px] font-black uppercase italic text-slate-700">{p.nama_guru}</td>
                               <td className="px-4 py-5 text-[10px] font-black uppercase italic text-slate-400">Jam {p.jam} ({p.id_kelas})</td>
-                              <td className="px-4 py-5"><span className={`px-3 py-1 rounded-lg text-[9px] font-black uppercase ${p.status === AttendanceStatus.SAKIT ? 'bg-amber-50 text-amber-600' : 'bg-indigo-50 text-indigo-600'}`}>{p.status}</span></td>
-                              <td className="px-8 py-5 text-[9px] font-bold text-slate-400 uppercase italic">{p.catatan || '-'}</td>
+                              <td className="px-4 py-5 text-center"><span className={`px-3 py-1 rounded-lg text-[9px] font-black uppercase ${p.status === AttendanceStatus.SAKIT ? 'bg-amber-50 text-amber-600' : 'bg-indigo-50 text-indigo-600'}`}>{p.status}</span></td>
+                              <td className="px-4 py-5 text-[9px] font-bold text-slate-400 uppercase italic truncate max-w-[150px]">{p.catatan || '-'}</td>
+                              <td className="px-8 py-5 text-right">
+                                 <div className="flex items-center justify-end gap-2 opacity-0 group-hover:opacity-100 transition-all">
+                                    <button onClick={() => { 
+                                       setPermitForm({ date: p.tanggal, teacherId: p.id_guru, status: p.status, note: p.catatan || '', type: 'SPECIFIC_HOURS', affected_jams: [p.jam] });
+                                       window.scrollTo({ top: 0, behavior: 'smooth' });
+                                    }} className="p-2 bg-indigo-50 text-indigo-600 rounded-lg hover:bg-indigo-600 hover:text-white transition-all"><Edit3 size={14}/></button>
+                                    <button onClick={() => handleDeletePermit(p)} className="p-2 bg-rose-50 text-rose-600 rounded-lg hover:bg-rose-600 hover:text-white transition-all"><Trash2 size={14}/></button>
+                                 </div>
+                              </td>
                            </tr>
                          ))
                        )}
@@ -514,8 +609,11 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
       {/* AGENDA TAB */}
       {activeTab === 'agenda' && (isAdmin || isKepalaSekolah) && (
         <div className="max-w-4xl mx-auto space-y-8 animate-in slide-in-from-bottom-6">
-           <div className="bg-white p-10 rounded-[40px] border border-slate-100 shadow-2xl">
-              <h3 className="text-sm font-black uppercase italic mb-8 flex items-center gap-4 text-slate-800"><Calendar size={24} className="text-indigo-600"/> Tambah Agenda / Libur Sekolah</h3>
+           <div className={`bg-white p-10 rounded-[40px] border shadow-2xl transition-all ${editingEventId ? 'border-indigo-300 ring-4 ring-indigo-50' : 'border-slate-100'}`}>
+              <h3 className="text-sm font-black uppercase italic mb-8 flex items-center gap-4 text-slate-800">
+                {editingEventId ? <Edit3 size={24} className="text-indigo-600"/> : <Calendar size={24} className="text-indigo-600"/>}
+                {editingEventId ? 'Perbarui Agenda Sekolah' : 'Tambah Agenda / Libur Sekolah'}
+              </h3>
               <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
                  <div><label className="text-[10px] font-black text-slate-400 mb-2 block uppercase italic tracking-widest">Tanggal</label><input type="date" className="w-full bg-slate-50 border border-slate-100 px-5 py-4 rounded-2xl font-black outline-none focus:bg-white uppercase text-[11px]" value={newEvent.tanggal} onChange={e => {
                    setNewEvent({...newEvent, tanggal: e.target.value, affected_jams: []});
@@ -543,7 +641,15 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
                 </div>
               )}
 
-              <button onClick={handleAddEvent} className="w-full bg-indigo-600 text-white font-black py-5 rounded-[22px] shadow-xl hover:bg-indigo-700 transition-all text-[11px] uppercase tracking-widest flex items-center justify-center gap-3 active:scale-95"><Plus size={18}/> Terbitkan Agenda</button>
+              <div className="flex gap-4">
+                 <button onClick={handleAddEvent} className={`flex-1 font-black py-5 rounded-[22px] shadow-xl transition-all text-[11px] uppercase tracking-widest flex items-center justify-center gap-3 active:scale-95 ${editingEventId ? 'bg-amber-500 text-white hover:bg-amber-600' : 'bg-indigo-600 text-white hover:bg-indigo-700'}`}>
+                    {editingEventId ? <RefreshCw size={18}/> : <Plus size={18}/>}
+                    {editingEventId ? 'Perbarui Perubahan' : 'Terbitkan Agenda'}
+                 </button>
+                 {editingEventId && (
+                   <button onClick={() => { setEditingEventId(null); setNewEvent({ tanggal: todayStr, nama: '', tipe: 'LIBUR', affected_jams: [] }); }} className="bg-slate-100 text-slate-500 px-8 py-5 rounded-[22px] font-black text-[11px] uppercase tracking-widest">Batal</button>
+                 )}
+              </div>
            </div>
            
            <div className="bg-white rounded-[40px] border border-slate-100 shadow-2xl overflow-hidden">
@@ -551,7 +657,7 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
                 <h3 className="text-[9px] font-black uppercase italic tracking-[0.2em] text-slate-400">Daftar Agenda Terdaftar</h3>
                 <div className="flex items-center gap-3">
                    <button onClick={() => exportExcel(settings.events || [], `Agenda_Sekolah`)} className="bg-emerald-600 text-white px-4 py-2 rounded-xl text-[9px] font-black uppercase flex items-center gap-2"><FileSpreadsheet size={14}/> Excel</button>
-                   <button onClick={() => exportPDF(`Daftar Agenda Sekolah - SMPN 3 Pacet`, [["Tanggal", "Kegiatan", "Tipe", "Jam"]], (settings.events || []).map(e => [e.tanggal, e.nama, e.tipe, e.affected_jams?.join(', ') || 'Semua']), `Agenda_Sekolah`)} className="bg-rose-600 text-white px-4 py-2 rounded-xl text-[9px] font-black uppercase flex items-center gap-2"><FileText size={14}/> PDF</button>
+                   <button onClick={() => exportPDF(`Daftar Agenda Sekolah`, [["Tanggal", "Kegiatan", "Tipe", "Jam"]], (settings.events || []).map(e => [e.tanggal, e.nama, e.tipe, e.affected_jams?.join(', ') || 'Semua']), `Agenda_Sekolah`)} className="bg-rose-600 text-white px-4 py-2 rounded-xl text-[9px] font-black uppercase flex items-center gap-2"><FileText size={14}/> PDF</button>
                 </div>
               </div>
               <table className="w-full text-left">
@@ -561,7 +667,7 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
                       <tr><td colSpan={4} className="py-20 text-center text-[10px] font-black uppercase text-slate-400 italic">Belum ada agenda sekolah terdaftar</td></tr>
                     ) : (
                       settings.events.map((ev, i) => (
-                        <tr key={ev.id || i} className="hover:bg-slate-50/50">
+                        <tr key={ev.id || i} className="hover:bg-slate-50/50 group">
                           <td className="px-8 py-6 text-xs font-black italic">{ev.tanggal}</td>
                           <td className="px-4 py-6">
                             <div className="text-xs font-black uppercase italic text-slate-700">{ev.nama}</div>
@@ -570,7 +676,12 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
                             )}
                           </td>
                           <td className="px-4 py-6 text-center"><span className={`px-3 py-1 rounded-lg text-[9px] font-black uppercase tracking-widest ${ev.tipe === 'LIBUR' ? 'bg-rose-50 text-rose-600' : ev.tipe === 'JAM_KHUSUS' ? 'bg-amber-50 text-amber-600' : 'bg-indigo-50 text-indigo-600'}`}>{ev.tipe}</span></td>
-                          <td className="px-8 py-6 text-right"><button onClick={() => handleDeleteEvent(ev.id || '')} className="p-2 text-slate-300 hover:text-rose-500 transition-colors active:scale-90"><Trash2 size={18}/></button></td>
+                          <td className="px-8 py-6 text-right">
+                             <div className="flex items-center justify-end gap-2">
+                                <button onClick={() => handleEditEvent(ev)} className="p-2 text-slate-300 hover:text-indigo-600 transition-colors active:scale-90"><Edit3 size={18}/></button>
+                                <button onClick={() => handleDeleteEvent(ev.id || '')} className="p-2 text-slate-300 hover:text-rose-500 transition-colors active:scale-90"><Trash2 size={18}/></button>
+                             </div>
+                          </td>
                         </tr>
                       ))
                     )}
