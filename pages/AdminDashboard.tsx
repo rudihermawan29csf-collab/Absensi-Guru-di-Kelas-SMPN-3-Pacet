@@ -10,6 +10,11 @@ import {
 import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend } from 'recharts';
 import { spreadsheetService } from './spreadsheetService';
 
+// Library ekspor
+import * as XLSX from 'xlsx';
+import { jsPDF } from 'jspdf';
+import 'jspdf-autotable';
+
 interface AdminDashboardProps {
   user: User;
   data: AttendanceRecord[];
@@ -79,11 +84,10 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
     const dayNames = ['MINGGU', 'SENIN', 'SELASA', 'RABU', 'KAMIS', 'JUM\'AT', 'SABTU'];
     const targetDay = dayNames[d.getDay()];
     const daySlots = schedule.filter(s => s.hari === targetDay);
-    // Get unique jam values
     return Array.from(new Set(daySlots.map(s => s.jam))).sort();
   };
 
-  // Date Range calculation based on filters
+  // Date Range calculation
   const dateRange = useMemo(() => {
     const now = new Date();
     const end = todayStr;
@@ -115,6 +119,11 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const filteredRecords = useMemo(() => {
     return (data || []).filter(r => r.tanggal >= dateRange.start && r.tanggal <= dateRange.end);
   }, [data, dateRange]);
+
+  // Riwayat Izin Data
+  const permitHistory = useMemo(() => {
+    return filteredRecords.filter(r => r.status === AttendanceStatus.IZIN || r.status === AttendanceStatus.SAKIT);
+  }, [filteredRecords]);
 
   // Analyzed data for Overview
   const classAnalysis = useMemo(() => {
@@ -154,6 +163,31 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
       }
     };
   }, [filteredRecords, selectedTeacherId]);
+
+  // --- EXPORT FUNCTIONS ---
+  const exportExcel = (data: any[], fileName: string) => {
+    const worksheet = XLSX.utils.json_to_sheet(data);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, "Sheet1");
+    XLSX.writeFile(workbook, `${fileName}.xlsx`);
+  };
+
+  const exportPDF = (title: string, headers: string[][], rows: any[][], fileName: string) => {
+    const doc = new jsPDF();
+    doc.setFontSize(16);
+    doc.text(title, 14, 20);
+    doc.setFontSize(10);
+    doc.text(`Periode: ${dateRange.start} s/d ${dateRange.end}`, 14, 28);
+    
+    (doc as any).autoTable({
+      startY: 35,
+      head: headers,
+      body: rows,
+      theme: 'grid',
+      headStyles: { fillStyle: [79, 70, 229] }
+    });
+    doc.save(`${fileName}.pdf`);
+  };
 
   // Handlers
   const handleSaveSettings = async () => {
@@ -337,9 +371,13 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
             <div className="bg-white p-8 rounded-[40px] border border-slate-100 shadow-2xl">
               <div className="flex items-center justify-between mb-8">
                  <h3 className="text-xs font-black uppercase italic text-slate-800 flex items-center gap-2"><BarChart3 size={16} className="text-indigo-600"/> Analisis Per Kelas</h3>
-                 <select className="bg-slate-50 border border-slate-100 pl-6 pr-10 py-3 rounded-2xl text-[10px] font-black uppercase outline-none min-w-[140px]" value={selectedClassId} onChange={e => setSelectedClassId(e.target.value)}>
-                   {CLASSES.map(c => <option key={c.id} value={c.id}>KELAS {c.id}</option>)}
-                 </select>
+                 <div className="flex items-center gap-2">
+                    <button onClick={() => exportExcel(classAnalysis.chart, `Analisis_Kelas_${selectedClassId}`)} className="p-2 text-emerald-600 hover:bg-emerald-50 rounded-lg transition-all" title="Excel"><FileSpreadsheet size={18}/></button>
+                    <button onClick={() => exportPDF(`Analisis Performa Kelas ${selectedClassId}`, [["Guru", "Hadir", "Izin", "Sakit", "Alpha"]], classAnalysis.chart.map(c => [c.name, c.Hadir, c.Izin, c.Sakit, c.Alpha]), `Analisis_Kelas_${selectedClassId}`)} className="p-2 text-rose-600 hover:bg-rose-50 rounded-lg transition-all" title="PDF"><FileText size={18}/></button>
+                    <select className="bg-slate-50 border border-slate-100 pl-6 pr-10 py-3 rounded-2xl text-[10px] font-black uppercase outline-none min-w-[140px]" value={selectedClassId} onChange={e => setSelectedClassId(e.target.value)}>
+                      {CLASSES.map(c => <option key={c.id} value={c.id}>KELAS {c.id}</option>)}
+                    </select>
+                 </div>
               </div>
               <div className="grid grid-cols-4 gap-2 mb-8">
                 {[
@@ -373,9 +411,13 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
             <div className="bg-white p-8 rounded-[40px] border border-slate-100 shadow-2xl">
                <div className="flex items-center justify-between mb-8">
                  <h3 className="text-xs font-black uppercase italic text-slate-800 flex items-center gap-2"><UserCheck size={16} className="text-indigo-600"/> Analisis Per Guru</h3>
-                 <select className="bg-slate-50 border border-slate-100 pl-6 pr-10 py-3 rounded-2xl text-[10px] font-black uppercase outline-none min-w-[180px]" value={selectedTeacherId} onChange={e => setSelectedTeacherId(e.target.value)}>
-                   {teachers.map(t => <option key={t.id} value={t.id}>{t.nama}</option>)}
-                 </select>
+                 <div className="flex items-center gap-2">
+                    <button onClick={() => exportExcel(teacherAnalysis.chart, `Analisis_Guru_${selectedTeacherId}`)} className="p-2 text-emerald-600 hover:bg-emerald-50 rounded-lg transition-all" title="Excel"><FileSpreadsheet size={18}/></button>
+                    <button onClick={() => exportPDF(`Analisis Performa Guru: ${teachers.find(t=>t.id===selectedTeacherId)?.nama}`, [["Kelas", "Hadir", "Izin", "Sakit", "Alpha"]], teacherAnalysis.chart.map(c => [c.name, c.Hadir, c.Izin, c.Sakit, c.Alpha]), `Analisis_Guru_${selectedTeacherId}`)} className="p-2 text-rose-600 hover:bg-rose-50 rounded-lg transition-all" title="PDF"><FileText size={18}/></button>
+                    <select className="bg-slate-50 border border-slate-100 pl-6 pr-10 py-3 rounded-2xl text-[10px] font-black uppercase outline-none min-w-[180px]" value={selectedTeacherId} onChange={e => setSelectedTeacherId(e.target.value)}>
+                      {teachers.map(t => <option key={t.id} value={t.id}>{t.nama}</option>)}
+                    </select>
+                 </div>
               </div>
               <div className="grid grid-cols-4 gap-2 mb-8">
                 {[
@@ -435,6 +477,37 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
               )}
               <button onClick={handleApplyPermit} className="w-full bg-indigo-600 text-white font-black py-5 rounded-[22px] shadow-xl hover:bg-indigo-700 transition-all text-[11px] uppercase tracking-widest flex items-center justify-center gap-3 active:scale-95"><Save size={18}/> Kirim Laporan Izin</button>
            </div>
+
+           {/* RIWAYAT IZIN */}
+           <div className="bg-white rounded-[40px] border border-slate-100 shadow-2xl overflow-hidden">
+              <div className="p-8 border-b border-slate-50 bg-slate-50/30 flex items-center justify-between">
+                <h3 className="text-xs font-black uppercase italic text-slate-800">Riwayat Izin & Sakit ({timeFilter})</h3>
+                <div className="flex items-center gap-3">
+                   <button onClick={() => exportExcel(permitHistory, `Riwayat_Izin_${timeFilter}`)} className="bg-emerald-600 text-white px-4 py-2 rounded-xl text-[9px] font-black uppercase flex items-center gap-2"><FileSpreadsheet size={14}/> Excel</button>
+                   <button onClick={() => exportPDF(`Riwayat Izin Guru - ${timeFilter}`, [["Tanggal", "Guru", "Kelas", "Jam", "Status", "Catatan"]], permitHistory.map(p => [p.tanggal, p.nama_guru, p.id_kelas, p.jam, p.status, p.catatan]), `Riwayat_Izin_${timeFilter}`)} className="bg-rose-600 text-white px-4 py-2 rounded-xl text-[9px] font-black uppercase flex items-center gap-2"><FileText size={14}/> PDF</button>
+                </div>
+              </div>
+              <div className="overflow-x-auto no-scrollbar">
+                 <table className="w-full text-left">
+                    <thead><tr className="bg-slate-50/50"><th className="px-8 py-5 text-[9px] font-black text-slate-400 uppercase italic">Tanggal</th><th className="px-4 py-5 text-[9px] font-black text-slate-400 uppercase italic">Guru</th><th className="px-4 py-5 text-[9px] font-black text-slate-400 uppercase italic">Kelas</th><th className="px-4 py-5 text-[9px] font-black text-slate-400 uppercase italic">Status</th><th className="px-8 py-5 text-[9px] font-black text-slate-400 uppercase italic">Keterangan</th></tr></thead>
+                    <tbody className="divide-y divide-slate-50">
+                       {permitHistory.length === 0 ? (
+                         <tr><td colSpan={5} className="py-20 text-center text-[10px] font-black uppercase text-slate-400 italic">Tidak ada riwayat izin di periode ini</td></tr>
+                       ) : (
+                         permitHistory.map((p, i) => (
+                           <tr key={i} className="hover:bg-slate-50/50">
+                              <td className="px-8 py-5 text-[10px] font-black italic">{p.tanggal}</td>
+                              <td className="px-4 py-5 text-[10px] font-black uppercase italic text-slate-700">{p.nama_guru}</td>
+                              <td className="px-4 py-5 text-[10px] font-black uppercase italic text-slate-400">Jam {p.jam} ({p.id_kelas})</td>
+                              <td className="px-4 py-5"><span className={`px-3 py-1 rounded-lg text-[9px] font-black uppercase ${p.status === AttendanceStatus.SAKIT ? 'bg-amber-50 text-amber-600' : 'bg-indigo-50 text-indigo-600'}`}>{p.status}</span></td>
+                              <td className="px-8 py-5 text-[9px] font-bold text-slate-400 uppercase italic">{p.catatan || '-'}</td>
+                           </tr>
+                         ))
+                       )}
+                    </tbody>
+                 </table>
+              </div>
+           </div>
         </div>
       )}
 
@@ -474,8 +547,12 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
            </div>
            
            <div className="bg-white rounded-[40px] border border-slate-100 shadow-2xl overflow-hidden">
-              <div className="p-8 border-b border-slate-50 bg-slate-50/30">
+              <div className="p-8 border-b border-slate-50 bg-slate-50/30 flex items-center justify-between">
                 <h3 className="text-[9px] font-black uppercase italic tracking-[0.2em] text-slate-400">Daftar Agenda Terdaftar</h3>
+                <div className="flex items-center gap-3">
+                   <button onClick={() => exportExcel(settings.events || [], `Agenda_Sekolah`)} className="bg-emerald-600 text-white px-4 py-2 rounded-xl text-[9px] font-black uppercase flex items-center gap-2"><FileSpreadsheet size={14}/> Excel</button>
+                   <button onClick={() => exportPDF(`Daftar Agenda Sekolah - SMPN 3 Pacet`, [["Tanggal", "Kegiatan", "Tipe", "Jam"]], (settings.events || []).map(e => [e.tanggal, e.nama, e.tipe, e.affected_jams?.join(', ') || 'Semua']), `Agenda_Sekolah`)} className="bg-rose-600 text-white px-4 py-2 rounded-xl text-[9px] font-black uppercase flex items-center gap-2"><FileText size={14}/> PDF</button>
+                </div>
               </div>
               <table className="w-full text-left">
                  <thead><tr className="bg-slate-50/50"><th className="px-8 py-6 text-[9px] font-black text-slate-400 uppercase tracking-widest italic">Tanggal</th><th className="px-4 py-6 text-[9px] font-black text-slate-400 uppercase tracking-widest italic">Kegiatan</th><th className="px-4 py-6 text-[9px] font-black text-slate-400 uppercase tracking-widest italic text-center">Tipe</th><th className="px-8 py-6 text-[9px] font-black text-slate-400 uppercase tracking-widest italic text-right">Aksi</th></tr></thead>
@@ -499,6 +576,83 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
                     )}
                  </tbody>
               </table>
+           </div>
+        </div>
+      )}
+
+      {/* MONITORING TAB */}
+      {activeTab === 'monitoring' && (
+        <div className="bg-white rounded-[40px] border border-slate-100 shadow-2xl overflow-hidden animate-in slide-in-from-bottom-6">
+          <div className="p-8 border-b border-slate-50 flex items-center justify-between bg-slate-50/30">
+            <h3 className="text-xs font-black uppercase italic">Live Monitoring Absensi</h3>
+            <div className="flex items-center gap-2"><span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span><span className="text-[9px] font-black text-emerald-600 uppercase italic">Sinkronisasi Cloud Aktif</span></div>
+          </div>
+          <div className="overflow-x-auto no-scrollbar">
+            <table className="w-full text-left">
+              <thead><tr className="bg-slate-50/50"><th className="px-8 py-6 text-[9px] font-black text-slate-400 uppercase tracking-widest">Jam</th><th className="px-4 py-6 text-[9px] font-black text-slate-400 uppercase tracking-widest">Kelas</th><th className="px-4 py-6 text-[9px] font-black text-slate-400 uppercase tracking-widest">Guru</th><th className="px-8 py-6 text-[9px] font-black text-slate-400 uppercase tracking-widest text-center">Status</th></tr></thead>
+              <tbody className="divide-y divide-slate-50">
+                {(filteredRecords || []).filter(r => r.tanggal === todayStr).length === 0 ? (
+                  <tr><td colSpan={4} className="py-20 text-center text-[10px] font-black uppercase text-slate-400 italic">Belum ada absensi terdaftar hari ini</td></tr>
+                ) : (
+                  (filteredRecords || []).filter(r => r.tanggal === todayStr).map((r, i) => (
+                    <tr key={i} className="hover:bg-slate-50/50">
+                      <td className="px-8 py-6 text-xs font-black text-slate-500 italic">Jam {r.jam}</td>
+                      <td className="px-4 py-6"><span className={`px-3 py-1 rounded-lg text-[10px] font-black ${CLASS_COLORS[r.id_kelas]}`}>{r.id_kelas}</span></td>
+                      <td className="px-4 py-6 text-xs font-black uppercase text-slate-800">{r.nama_guru}</td>
+                      <td className="px-8 py-6 text-center"><span className={`px-4 py-1.5 rounded-full text-[9px] font-black uppercase tracking-widest ${r.status === AttendanceStatus.HADIR ? 'bg-emerald-50 text-emerald-600' : 'bg-rose-50 text-rose-600'}`}>{r.status}</span></td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* TEACHERS TAB */}
+      {activeTab === 'teachers' && isAdmin && (
+        <div className="space-y-6 animate-in fade-in slide-in-from-bottom-6">
+           <div className="bg-white p-10 rounded-[40px] border border-slate-100 shadow-2xl">
+              <div className="flex flex-col md:flex-row md:items-center justify-between gap-6 mb-10">
+                 <div>
+                    <h3 className="text-sm font-black uppercase italic flex items-center gap-3 text-slate-800"><Users size={24} className="text-indigo-600"/> Manajemen Guru</h3>
+                    <p className="text-[10px] font-black text-slate-400 uppercase mt-1 italic tracking-widest leading-none">Database Terpusat</p>
+                 </div>
+                 <div className="flex flex-wrap items-center gap-4">
+                    <div className="relative">
+                       <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-300" size={18}/>
+                       <input type="text" placeholder="CARI NAMA GURU..." className="pl-12 pr-6 py-4 bg-slate-50 border border-slate-100 rounded-2xl text-[10px] font-black uppercase outline-none focus:bg-white focus:ring-4 focus:ring-indigo-50 min-w-[280px]" value={searchTeacher} onChange={e => setSearchTeacher(e.target.value)}/>
+                    </div>
+                    <button onClick={() => { setIsTeacherModalOpen(true); setEditingTeacherId(null); setTeacherForm({ id: '', nama: '', mapel: [] }); }} className="bg-indigo-600 text-white font-black px-8 py-4 rounded-2xl shadow-xl shadow-indigo-100 hover:bg-indigo-700 transition-all text-[10px] uppercase tracking-widest flex items-center gap-3 active:scale-95"><Plus size={18}/> Tambah Guru</button>
+                 </div>
+              </div>
+
+              <div className="overflow-x-auto no-scrollbar">
+                 <table className="w-full text-left">
+                    <thead><tr className="border-b border-slate-50"><th className="px-6 py-5 text-[9px] font-black text-slate-400 uppercase tracking-widest italic">Kode</th><th className="px-6 py-5 text-[9px] font-black text-slate-400 uppercase tracking-widest italic">Nama Lengkap</th><th className="px-6 py-5 text-[9px] font-black text-slate-400 uppercase tracking-widest italic">Mata Pelajaran</th><th className="px-6 py-5 text-[9px] font-black text-slate-400 uppercase tracking-widest italic text-right">Aksi</th></tr></thead>
+                    <tbody className="divide-y divide-slate-50">
+                       {teachers.filter(t => t.nama.toLowerCase().includes(searchTeacher.toLowerCase())).map(t => (
+                         <tr key={t.id} className="hover:bg-slate-50/50 group transition-colors">
+                            <td className="px-6 py-5"><span className="text-[10px] font-black px-3 py-1 bg-slate-100 rounded-lg group-hover:bg-indigo-600 group-hover:text-white transition-colors uppercase">{t.id}</span></td>
+                            <td className="px-6 py-5 text-xs font-black uppercase text-slate-800 tracking-tight">{t.nama}</td>
+                            <td className="px-6 py-5">
+                               <div className="flex flex-wrap gap-2">
+                                  {getMapelArray(t.mapel).map((m, i) => (
+                                    <span key={i} className="px-3 py-1 bg-indigo-50 text-indigo-600 rounded-full text-[8px] font-black uppercase tracking-tighter italic">{m}</span>
+                                  ))}
+                               </div>
+                            </td>
+                            <td className="px-6 py-5 text-right">
+                               <div className="flex items-center justify-end gap-3 opacity-0 group-hover:opacity-100 transition-opacity">
+                                  <button onClick={() => { setEditingTeacherId(t.id); setTeacherForm(t); setIsTeacherModalOpen(true); }} className="p-3 bg-white text-indigo-600 border border-slate-100 rounded-xl hover:bg-indigo-50 shadow-sm transition-all active:scale-90"><Edit3 size={16}/></button>
+                                  <button onClick={() => handleDeleteTeacher(t.id)} className="p-3 bg-white text-rose-600 border border-slate-100 rounded-xl hover:bg-rose-50 shadow-sm transition-all active:scale-90"><Trash2 size={16}/></button>
+                               </div>
+                            </td>
+                         </tr>
+                       ))}
+                    </tbody>
+                 </table>
+              </div>
            </div>
         </div>
       )}
@@ -591,83 +745,6 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
                       {isRestoring ? 'SEDANG RESTORASI...' : 'RESTORE MASTER DATA'}
                    </button>
                 </div>
-              </div>
-           </div>
-        </div>
-      )}
-
-      {/* MONITORING TAB */}
-      {activeTab === 'monitoring' && (
-        <div className="bg-white rounded-[40px] border border-slate-100 shadow-2xl overflow-hidden animate-in slide-in-from-bottom-6">
-          <div className="p-8 border-b border-slate-50 flex items-center justify-between bg-slate-50/30">
-            <h3 className="text-xs font-black uppercase italic">Live Monitoring Absensi</h3>
-            <div className="flex items-center gap-2"><span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span><span className="text-[9px] font-black text-emerald-600 uppercase italic">Sinkronisasi Cloud Aktif</span></div>
-          </div>
-          <div className="overflow-x-auto no-scrollbar">
-            <table className="w-full text-left">
-              <thead><tr className="bg-slate-50/50"><th className="px-8 py-6 text-[9px] font-black text-slate-400 uppercase tracking-widest">Jam</th><th className="px-4 py-6 text-[9px] font-black text-slate-400 uppercase tracking-widest">Kelas</th><th className="px-4 py-6 text-[9px] font-black text-slate-400 uppercase tracking-widest">Guru</th><th className="px-8 py-6 text-[9px] font-black text-slate-400 uppercase tracking-widest text-center">Status</th></tr></thead>
-              <tbody className="divide-y divide-slate-50">
-                {(filteredRecords || []).filter(r => r.tanggal === todayStr).length === 0 ? (
-                  <tr><td colSpan={4} className="py-20 text-center text-[10px] font-black uppercase text-slate-400 italic">Belum ada absensi terdaftar hari ini</td></tr>
-                ) : (
-                  (filteredRecords || []).filter(r => r.tanggal === todayStr).map((r, i) => (
-                    <tr key={i} className="hover:bg-slate-50/50">
-                      <td className="px-8 py-6 text-xs font-black text-slate-500 italic">Jam {r.jam}</td>
-                      <td className="px-4 py-6"><span className={`px-3 py-1 rounded-lg text-[10px] font-black ${CLASS_COLORS[r.id_kelas]}`}>{r.id_kelas}</span></td>
-                      <td className="px-4 py-6 text-xs font-black uppercase text-slate-800">{r.nama_guru}</td>
-                      <td className="px-8 py-6 text-center"><span className={`px-4 py-1.5 rounded-full text-[9px] font-black uppercase tracking-widest ${r.status === AttendanceStatus.HADIR ? 'bg-emerald-50 text-emerald-600' : 'bg-rose-50 text-rose-600'}`}>{r.status}</span></td>
-                    </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      )}
-
-      {/* TEACHERS TAB */}
-      {activeTab === 'teachers' && isAdmin && (
-        <div className="space-y-6 animate-in fade-in slide-in-from-bottom-6">
-           <div className="bg-white p-10 rounded-[40px] border border-slate-100 shadow-2xl">
-              <div className="flex flex-col md:flex-row md:items-center justify-between gap-6 mb-10">
-                 <div>
-                    <h3 className="text-sm font-black uppercase italic flex items-center gap-3 text-slate-800"><Users size={24} className="text-indigo-600"/> Manajemen Guru</h3>
-                    <p className="text-[10px] font-black text-slate-400 uppercase mt-1 italic tracking-widest leading-none">Database Terpusat</p>
-                 </div>
-                 <div className="flex flex-wrap items-center gap-4">
-                    <div className="relative">
-                       <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-300" size={18}/>
-                       <input type="text" placeholder="CARI NAMA GURU..." className="pl-12 pr-6 py-4 bg-slate-50 border border-slate-100 rounded-2xl text-[10px] font-black uppercase outline-none focus:bg-white focus:ring-4 focus:ring-indigo-50 min-w-[280px]" value={searchTeacher} onChange={e => setSearchTeacher(e.target.value)}/>
-                    </div>
-                    <button onClick={() => { setIsTeacherModalOpen(true); setEditingTeacherId(null); setTeacherForm({ id: '', nama: '', mapel: [] }); }} className="bg-indigo-600 text-white font-black px-8 py-4 rounded-2xl shadow-xl shadow-indigo-100 hover:bg-indigo-700 transition-all text-[10px] uppercase tracking-widest flex items-center gap-3 active:scale-95"><Plus size={18}/> Tambah Guru</button>
-                 </div>
-              </div>
-
-              <div className="overflow-x-auto no-scrollbar">
-                 <table className="w-full text-left">
-                    <thead><tr className="border-b border-slate-50"><th className="px-6 py-5 text-[9px] font-black text-slate-400 uppercase tracking-widest italic">Kode</th><th className="px-6 py-5 text-[9px] font-black text-slate-400 uppercase tracking-widest italic">Nama Lengkap</th><th className="px-6 py-5 text-[9px] font-black text-slate-400 uppercase tracking-widest italic">Mata Pelajaran</th><th className="px-6 py-5 text-[9px] font-black text-slate-400 uppercase tracking-widest italic text-right">Aksi</th></tr></thead>
-                    <tbody className="divide-y divide-slate-50">
-                       {teachers.filter(t => t.nama.toLowerCase().includes(searchTeacher.toLowerCase())).map(t => (
-                         <tr key={t.id} className="hover:bg-slate-50/50 group transition-colors">
-                            <td className="px-6 py-5"><span className="text-[10px] font-black px-3 py-1 bg-slate-100 rounded-lg group-hover:bg-indigo-600 group-hover:text-white transition-colors uppercase">{t.id}</span></td>
-                            <td className="px-6 py-5 text-xs font-black uppercase text-slate-800 tracking-tight">{t.nama}</td>
-                            <td className="px-6 py-5">
-                               <div className="flex flex-wrap gap-2">
-                                  {getMapelArray(t.mapel).map((m, i) => (
-                                    <span key={i} className="px-3 py-1 bg-indigo-50 text-indigo-600 rounded-full text-[8px] font-black uppercase tracking-tighter italic">{m}</span>
-                                  ))}
-                               </div>
-                            </td>
-                            <td className="px-6 py-5 text-right">
-                               <div className="flex items-center justify-end gap-3 opacity-0 group-hover:opacity-100 transition-opacity">
-                                  <button onClick={() => { setEditingTeacherId(t.id); setTeacherForm(t); setIsTeacherModalOpen(true); }} className="p-3 bg-white text-indigo-600 border border-slate-100 rounded-xl hover:bg-indigo-50 shadow-sm transition-all active:scale-90"><Edit3 size={16}/></button>
-                                  <button onClick={() => handleDeleteTeacher(t.id)} className="p-3 bg-white text-rose-600 border border-slate-100 rounded-xl hover:bg-rose-50 shadow-sm transition-all active:scale-90"><Trash2 size={16}/></button>
-                               </div>
-                            </td>
-                         </tr>
-                       ))}
-                    </tbody>
-                 </table>
               </div>
            </div>
         </div>
