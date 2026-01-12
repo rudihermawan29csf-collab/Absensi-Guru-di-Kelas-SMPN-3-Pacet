@@ -4,7 +4,8 @@ import { CLASSES, CLASS_COLORS, TEACHERS as INITIAL_TEACHERS, SCHEDULE as INITIA
 import { 
   Users, LayoutGrid, Calendar, Activity, Settings, ShieldCheck, BookOpen, Save, CheckCircle2, RefreshCw, 
   Wifi, BarChart3, AlertTriangle, Clock, Search, BookText, Plus, Trash2, CalendarDays, TrendingUp, UserCheck,
-  Edit3, Coffee, Filter, PieChart as PieIcon, ChevronDown, Download, FileSpreadsheet, FileText, ChevronRight, X
+  Edit3, Coffee, Filter, PieChart as PieIcon, ChevronDown, Download, FileSpreadsheet, FileText, ChevronRight, X,
+  CheckSquare, Square
 } from 'lucide-react';
 import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend } from 'recharts';
 import { spreadsheetService } from './spreadsheetService';
@@ -134,6 +135,57 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
     const targetDay = dayNames[d.getDay()];
     const daySlots = schedule.filter(s => s.hari === targetDay);
     return Array.from(new Set(daySlots.map(s => String(s.jam)))).sort();
+  };
+
+  // Helper untuk mendapatkan jadwal penuh pada tanggal tertentu untuk tampilan Agenda
+  const getFullScheduleForDate = (dateStr: string) => {
+    if (!dateStr) return [];
+    const d = new Date(dateStr);
+    const dayNames = ['MINGGU', 'SENIN', 'SELASA', 'RABU', 'KAMIS', 'JUM\'AT', 'SABTU'];
+    const targetDay = dayNames[d.getDay()];
+    // Return jadwal, diurutkan berdasarkan jam (string ke number)
+    return schedule
+      .filter(s => s.hari === targetDay)
+      .sort((a, b) => Number(a.jam) - Number(b.jam));
+  };
+
+  // Matrix Logic
+  const toggleMatrixCell = (jam: string, classId: string) => {
+    const id = `${classId}-${jam}`;
+    const current = newEvent.affected_jams || [];
+    if (current.includes(id)) {
+      setNewEvent({ ...newEvent, affected_jams: current.filter(c => c !== id) });
+    } else {
+      setNewEvent({ ...newEvent, affected_jams: [...current, id] });
+    }
+  };
+
+  const toggleMatrixRow = (jam: string) => {
+    const current = newEvent.affected_jams || [];
+    const allRowIds = CLASSES.map(c => `${c.id}-${jam}`);
+    const isAllSelected = allRowIds.every(id => current.includes(id));
+
+    if (isAllSelected) {
+      // Remove all
+      setNewEvent({ ...newEvent, affected_jams: current.filter(id => !allRowIds.includes(id)) });
+    } else {
+      // Add missing
+      const toAdd = allRowIds.filter(id => !current.includes(id));
+      setNewEvent({ ...newEvent, affected_jams: [...current, ...toAdd] });
+    }
+  };
+
+  const toggleMatrixCol = (classId: string, availableJams: string[]) => {
+    const current = newEvent.affected_jams || [];
+    const allColIds = availableJams.map(jam => `${classId}-${jam}`);
+    const isAllSelected = allColIds.every(id => current.includes(id));
+
+    if (isAllSelected) {
+       setNewEvent({ ...newEvent, affected_jams: current.filter(id => !allColIds.includes(id)) });
+    } else {
+       const toAdd = allColIds.filter(id => !current.includes(id));
+       setNewEvent({ ...newEvent, affected_jams: [...current, ...toAdd] });
+    }
   };
 
   const dateRange = useMemo(() => {
@@ -422,6 +474,9 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
     ] : [])
   ];
 
+  const fullScheduleForAgenda = getFullScheduleForDate(newEvent.tanggal || '');
+  const availableJamsForAgenda = fullScheduleForAgenda.map(s => String(s.jam));
+
   return (
     <div className="space-y-6 pb-20 animate-in fade-in duration-500">
       <header className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
@@ -636,16 +691,58 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
               </div>
 
               {newEvent.tipe === 'JAM_KHUSUS' && (
-                <div className="bg-slate-50 p-6 rounded-3xl border border-slate-100 mb-8">
-                   <p className="text-[10px] font-black text-slate-400 mb-4 uppercase flex items-center gap-2 italic leading-none tracking-widest"><Clock size={14}/> Pilih Jam Pelajaran yang Terkena Penyesuaian:</p>
-                   <div className="grid grid-cols-4 md:grid-cols-8 gap-2">
-                      {getPeriodsForDate(newEvent.tanggal || '').map(jam => (
-                        <label key={jam} className={`flex flex-col items-center p-3 rounded-2xl border cursor-pointer transition-all ${newEvent.affected_jams?.includes(String(jam)) ? 'bg-indigo-600 text-white border-indigo-700 shadow-lg' : 'bg-white text-slate-400 border-slate-200'}`}>
-                           <input type="checkbox" className="hidden" checked={newEvent.affected_jams?.includes(String(jam))} onChange={e => { const currentJams = newEvent.affected_jams || []; const updated = e.target.checked ? [...currentJams, String(jam)] : currentJams.filter(j => j !== String(jam)); setNewEvent({...newEvent, affected_jams: updated}); }}/>
-                           <span className="text-xs font-black">{jam}</span>
-                        </label>
-                      ))}
+                <div className="bg-slate-50 p-6 rounded-3xl border border-slate-100 mb-8 overflow-hidden">
+                   <p className="text-[10px] font-black text-slate-400 mb-4 uppercase flex items-center gap-2 italic leading-none tracking-widest"><Clock size={14}/> Klik kotak untuk memilih Jam & Kelas yang terkena penyesuaian:</p>
+                   
+                   {/* Tampilan Matriks Jadwal Grid */}
+                   <div className="overflow-x-auto no-scrollbar rounded-2xl border border-slate-200 bg-white">
+                      <table className="w-full text-left">
+                        <thead>
+                          <tr className="bg-slate-100/50">
+                             <th className="px-3 py-3 text-[9px] font-black text-slate-400 uppercase border-b border-slate-100 sticky left-0 bg-slate-50 z-10">
+                                JAM
+                             </th>
+                             {CLASSES.map(cls => (
+                               <th key={cls.id} className="px-2 py-3 text-[9px] font-black text-slate-400 uppercase border-b border-slate-100 text-center min-w-[50px] cursor-pointer hover:bg-indigo-50 transition-colors"
+                                   onClick={() => toggleMatrixCol(cls.id, availableJamsForAgenda)}
+                                   title={`Pilih semua jam untuk ${cls.id}`}>
+                                  {cls.id}
+                               </th>
+                             ))}
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-50">
+                          {fullScheduleForAgenda.length === 0 ? (
+                            <tr><td colSpan={10} className="py-8 text-center text-[10px] font-black text-slate-400 uppercase italic">Tidak ada jadwal KBM</td></tr>
+                          ) : (
+                            fullScheduleForAgenda.map((slot) => (
+                              <tr key={slot.jam} className="hover:bg-slate-50/30">
+                                 <td className="px-3 py-3 text-[10px] font-black text-slate-500 border-r border-slate-100 sticky left-0 bg-white z-10 cursor-pointer hover:text-indigo-600"
+                                     onClick={() => toggleMatrixRow(String(slot.jam))}
+                                     title={`Pilih semua kelas untuk Jam ${slot.jam}`}>
+                                   Jam {slot.jam}
+                                 </td>
+                                 {CLASSES.map(cls => {
+                                   const id = `${cls.id}-${slot.jam}`;
+                                   const isSelected = newEvent.affected_jams?.includes(id);
+                                   return (
+                                     <td key={id} className="p-0 text-center border-r border-slate-50 last:border-0">
+                                        <div 
+                                          onClick={() => toggleMatrixCell(String(slot.jam), cls.id)}
+                                          className={`h-full w-full py-3 cursor-pointer flex items-center justify-center transition-all duration-200 ${isSelected ? 'bg-indigo-600 text-white' : 'hover:bg-indigo-50'}`}
+                                        >
+                                           {isSelected ? <CheckSquare size={14}/> : <Square size={14} className="text-slate-200"/>}
+                                        </div>
+                                     </td>
+                                   );
+                                 })}
+                              </tr>
+                            ))
+                          )}
+                        </tbody>
+                      </table>
                    </div>
+                   <p className="text-[8px] text-slate-400 italic mt-2 text-right">* Klik Judul Kolom/Baris untuk pilih semua</p>
                 </div>
               )}
 
@@ -677,7 +774,7 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
                           <td className="px-8 py-6 text-xs font-black italic">{formatSimpleDate(ev.tanggal)}</td>
                           <td className="px-4 py-6">
                             <div className="text-xs font-black uppercase italic text-slate-700">{ev.nama}</div>
-                            {ev.tipe === 'JAM_KHUSUS' && ev.affected_jams && ev.affected_jams.length > 0 && (<div className="text-[8px] text-indigo-500 font-bold mt-1">Jam Terkena: {ev.affected_jams.join(', ')}</div>)}
+                            {ev.tipe === 'JAM_KHUSUS' && ev.affected_jams && ev.affected_jams.length > 0 && (<div className="text-[8px] text-indigo-500 font-bold mt-1 truncate max-w-[200px]">{ev.affected_jams.length > 10 ? `${ev.affected_jams.length} Jam Terpilih` : ev.affected_jams.join(', ')}</div>)}
                           </td>
                           <td className="px-4 py-6 text-center"><span className={`px-3 py-1 rounded-lg text-[9px] font-black uppercase tracking-widest ${ev.tipe === 'LIBUR' ? 'bg-rose-50 text-rose-600' : ev.tipe === 'JAM_KHUSUS' ? 'bg-amber-50 text-amber-600' : 'bg-indigo-50 text-indigo-600'}`}>{ev.tipe}</span></td>
                           <td className="px-8 py-6 text-right">

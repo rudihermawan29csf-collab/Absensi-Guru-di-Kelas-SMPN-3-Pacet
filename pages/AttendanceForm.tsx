@@ -52,7 +52,12 @@ const AttendanceForm: React.FC<AttendanceFormProps> = ({ user, onSave, attendanc
         let daySchedule = schedule.filter(s => s.hari === selectedDay && s.mapping && s.mapping[user.kelas || ''] && s.kegiatan === 'KBM');
         
         if (todayEvent?.tipe === 'JAM_KHUSUS' && Array.isArray(todayEvent.affected_jams)) {
-          daySchedule = daySchedule.filter(s => !todayEvent.affected_jams?.includes(s.jam));
+           // Filter both general period exclusion (e.g., "1") and class-specific exclusion (e.g., "7A-1")
+           daySchedule = daySchedule.filter(s => {
+             const isGeneralExcluded = todayEvent.affected_jams?.includes(s.jam);
+             const isClassExcluded = todayEvent.affected_jams?.includes(`${user.kelas}-${s.jam}`);
+             return !isGeneralExcluded && !isClassExcluded;
+           });
         }
 
         const groupedBlocks: BlockEntry[] = [];
